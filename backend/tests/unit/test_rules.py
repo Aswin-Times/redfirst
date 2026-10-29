@@ -69,6 +69,13 @@ def test_timeout_and_oom_are_resource_limit():
     check([run(oom_killed=True)], outcome=O.INCONCLUSIVE, reason=R.RESOURCE_LIMIT)
 
 
+def test_killed_run_without_report_is_resource_limit_not_runner_error():
+    check([run(timed_out=True, report_parsed=False)], outcome=O.INCONCLUSIVE,
+          reason=R.RESOURCE_LIMIT)
+    check([run(oom_killed=True, report_parsed=False)], outcome=O.INCONCLUSIVE,
+          reason=R.RESOURCE_LIMIT)
+
+
 def test_failed_control_blocks_conclusions():
     check([run(control_status=T.FAILED)], outcome=O.INCONCLUSIVE, reason=R.CONTROL_FAILED)
 

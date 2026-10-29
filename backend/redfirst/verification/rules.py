@@ -24,7 +24,8 @@ def _hits_target(run: RunResult, contract: TestContract) -> bool:
 
 
 def _classify_run(run: RunResult, contract: TestContract) -> Verdict:
-    if run.runner_crashed or not run.report_parsed:
+    killed = run.timed_out or run.oom_killed  # a killed run legitimately has no report
+    if run.runner_crashed or (not run.report_parsed and not killed):
         return Verdict(outcome=O.EXECUTION_ERROR, reason=R.RUNNER_FAILURE,
                        evidence=["runner crashed or produced no parseable report"])
     if run.collection_error or run.main_phase in (TestPhase.COLLECTION, TestPhase.SETUP):

@@ -19,7 +19,7 @@ Early development. Backend only; no frontend yet.
 | M2 Safe archive extraction, layout detection | done |
 | M3 Repository analysis (AST index, tracebacks, search, ranking) | done |
 | Persistence (SQLAlchemy models, Alembic migration) | done (tested on SQLite only) |
-| M4 Sandbox runner | in progress: collector, result parsing and command builder done; Docker execution untested (Docker not installed on the dev machine) |
+| M4 Sandbox runner | code written; collector, result parsing and `docker run` flags tested. Real Docker execution **not yet verified** (Docker not installed on the dev machine) |
 | M5 LLM layer, test generation, validation | not started |
 | M6 Orchestrator, worker, API, export | not started |
 | M7 Frontend (Next.js) | not started |
@@ -62,6 +62,13 @@ sandbox-images/python/        sandbox image Dockerfile
 
 - Docker is not a complete security boundary. The sandbox hardening is documented in
   `docs/` once M8 lands; gVisor or a microVM is the recommended next layer.
+- The Docker sandbox runner (`sandbox/runner.py`) and its 7 abuse tests (infinite loop, network,
+  read-only repo, fork bomb, memory, huge output) have **never been run**: no Docker on the dev
+  machine. The collector and result parsing are tested with a plain local pytest subprocess only.
+  To run them: install Docker, `docker build -t redfirst-sandbox-python:3.12 sandbox-images/python`,
+  then `uv run python -m pytest tests/integration/test_sandbox_docker.py`.
+- The generated test runs from a separate directory, so the repository's own `conftest.py` is
+  not applied yet.
 - Database code has only been run against SQLite.
 - SQLAlchemy is pinned to 2.0.x because 2.1 needs compiled modules that some Windows
   Application Control policies block.
