@@ -199,8 +199,10 @@ def stream_events(inv_id: str, request: Request):
                 idle = 0.0
                 yield ": keep-alive\n\n"
 
-    return StreamingResponse(gen(), media_type="text/event-stream",
-                             headers={"Cache-Control": "no-cache"})
+    # no-transform stops compressing proxies (e.g. the Next.js dev proxy) from buffering
+    # the stream; X-Accel-Buffering does the same for nginx.
+    return StreamingResponse(gen(), media_type="text/event-stream", headers={
+        "Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"})
 
 
 @router.get("/investigations/{inv_id}/export/test")

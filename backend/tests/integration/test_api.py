@@ -88,6 +88,8 @@ def test_full_flow_upload_investigate_report_export(ctx):
 
     with client.stream("GET", f"/api/investigations/{inv['id']}/events") as stream:
         body = "".join(stream.iter_text())
+        assert "no-transform" in stream.headers["cache-control"]  # proxies must not buffer
+        assert stream.headers["x-accel-buffering"] == "no"
     assert body.count("event: state") == 8 and "event: end" in body
     with client.stream("GET", f"/api/investigations/{inv['id']}/events",
                        headers={"Last-Event-ID": "7"}) as stream:

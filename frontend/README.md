@@ -1,0 +1,40 @@
+# REDFIRST frontend
+
+Next.js 16 (App Router, Cache Components), TypeScript, Tailwind CSS 4, shadcn/ui (Base UI) and
+lucide icons. All data comes from the FastAPI backend; nothing on screen is invented.
+
+```bash
+pnpm install
+pnpm dev          # http://localhost:3000, proxies /api/* to REDFIRST_BACKEND_URL
+pnpm typecheck
+pnpm lint
+pnpm test         # Vitest + Testing Library
+pnpm build
+```
+
+`REDFIRST_BACKEND_URL` defaults to `http://127.0.0.1:8000`. Put overrides in `.env.local`
+(git-ignored). The backend address is only used by the server-side rewrite in
+`next.config.ts`; the browser only ever talks to this app.
+
+## Structure
+
+```
+src/app/                    routes: /, /investigations, /investigations/new,
+                            /investigations/[id], /projects
+src/components/pages/       client components holding each page's data and state
+src/components/             shared UI (status badge, stage progress, code/log views)
+src/components/ui/          shadcn/ui primitives (generated; edit sparingly)
+src/hooks/                  useResource (fetch + refresh), useInvestigationEvents (SSE)
+src/lib/                    API client, types mirroring the backend, stage/outcome logic
+```
+
+Data is fetched in the browser with inline loading states. The investigation workspace
+subscribes to `/api/investigations/{id}/events` (Server-Sent Events) and refetches the report
+on every persisted state change.
+
+## Notes
+
+- `src/lib/types.ts` is hand-written to mirror the backend schemas; keep it in sync.
+- `jsdom` is pinned to 26 because newer releases need Node 20.19+ / 22.12+.
+- `@rolldown/binding-win32-x64-msvc` is an optional dependency: pnpm did not install Vitest's
+  native Windows binding on its own on the development machine.

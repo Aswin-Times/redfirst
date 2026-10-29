@@ -10,7 +10,8 @@ A failing test is not automatically a reproduction (see `backend/redfirst/verifi
 
 ## Status
 
-Early development. Backend only; no frontend yet.
+Early development. Backend and web UI work end to end with a scripted model; the Docker
+sandbox and the live Claude API have not been exercised yet (see Known limitations).
 
 | Milestone | State |
 |---|---|
@@ -22,13 +23,13 @@ Early development. Backend only; no frontend yet.
 | M4 Sandbox runner | code written; collector, result parsing and `docker run` flags tested. Real Docker execution **not yet verified** (Docker not installed on the dev machine) |
 | M5 LLM layer, test generation, validation | done with mocked model responses; **never run against the live API** (no key on the dev machine) |
 | M6 Orchestrator, worker, API, export | done; end-to-end tested on 6 fixture repos with scripted model output and local (unsandboxed) pytest execution |
-| M7 Frontend (Next.js) | not started |
+| M7 Frontend (Next.js) | done; unit-tested, production build passes, and checked in a browser against a running API (live SSE updates, desktop and phone width, light and dark) |
 | M8 Hardening and docs | not started |
 
 ## Setup (Windows / macOS / Linux)
 
-Requirements: Python 3.11+, [uv](https://docs.astral.sh/uv/). Docker is required only for sandbox
-execution and PostgreSQL via `docker-compose.yml`.
+Requirements: Python 3.11+, [uv](https://docs.astral.sh/uv/), Node.js 20.9+ and pnpm for the web
+UI. Docker is required only for sandbox execution and PostgreSQL via `docker-compose.yml`.
 
 ```bash
 cd backend
@@ -51,6 +52,18 @@ Run the API (binds to 127.0.0.1; there is **no authentication** yet) and, separa
 uv run python -m uvicorn redfirst.api.app:create_app --factory --host 127.0.0.1 --port 8000
 uv run python -m redfirst.worker      # needs Docker + the sandbox image, and an Anthropic key
 ```
+
+Run the web UI (proxies `/api/*` to the backend; see `frontend/README.md`):
+
+```bash
+cd frontend
+pnpm install
+pnpm dev                               # http://localhost:3000
+```
+
+The UI has a dashboard, investigation history with filters, projects with archive upload, a
+new-investigation form, and an investigation workspace with live stage progress, the outcome,
+evidence, the generated test, per-run logs, the bug report, a timeline and exports.
 
 ## API
 
@@ -89,6 +102,7 @@ backend/redfirst/
   worker/                     job queue, orchestrator, worker entry point
 backend/prompts/              versioned prompt templates (name.version.md)
 backend/tests/{unit,security,integration}/
+frontend/                     Next.js web UI (see frontend/README.md)
 fixtures/repos/               small repos with planted bugs for end-to-end tests
 sandbox-images/python/        sandbox image Dockerfile
 ```
@@ -122,7 +136,10 @@ The model never sets the verdict. Generated tests are validated statically
   strict: tests that need file access, `os` or `sys` are rejected for now.
 - End-to-end tests use a scripted model and run fixture tests with plain local pytest, not the
   Docker sandbox. They prove the pipeline and verdict logic, not isolation or model quality.
-- The API has no authentication and is meant for single-user local use only.
+- The API and web UI have no authentication and are meant for single-user local use only.
+- The browser check of the UI used investigations completed by the real orchestrator with a
+  scripted model and unsandboxed local pytest, not a real worker.
+- Frontend types are hand-written mirrors of the backend schemas, not generated from OpenAPI.
 - Wrong-return-value bugs are classified REPRODUCED when a predicted `AssertionError` is raised
   in the main test that calls target code and the control test passes. This is weaker evidence
   than a failure inside target code, and the report says which kind it was.
