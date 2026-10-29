@@ -20,7 +20,7 @@ Early development. Backend only; no frontend yet.
 | M3 Repository analysis (AST index, tracebacks, search, ranking) | done |
 | Persistence (SQLAlchemy models, Alembic migration) | done (tested on SQLite only) |
 | M4 Sandbox runner | code written; collector, result parsing and `docker run` flags tested. Real Docker execution **not yet verified** (Docker not installed on the dev machine) |
-| M5 LLM layer, test generation, validation | not started |
+| M5 LLM layer, test generation, validation | done with mocked model responses; **never run against the live API** (no key on the dev machine) |
 | M6 Orchestrator, worker, API, export | not started |
 | M7 Frontend (Next.js) | not started |
 | M8 Hardening and docs | not started |
@@ -53,10 +53,26 @@ backend/redfirst/
   repos/                      safe archive extraction, layout detection
   analysis/                   AST index, traceback parsing, search, ranking
   sandbox/                    pytest collector, result parsing, docker runner
+  llm/                        provider interface, Anthropic adapter, fake provider, prompt loader
+  generation/                 evidence assembly, bounded generate -> validate -> repair loop
+  validation/                 static policy checks on generated tests
+backend/prompts/              versioned prompt templates (name.version.md)
   verification/               result models and classification rules
 backend/tests/{unit,security,integration}/
 sandbox-images/python/        sandbox image Dockerfile
 ```
+
+## LLM configuration
+
+The model is used through a provider-neutral interface (`redfirst/llm/base.py`); only
+Anthropic is implemented. Defaults: `claude-opus-5-5`, effort `high`, structured outputs via
+the official SDK, and **server-side refusal fallbacks enabled** (`REDFIRST_LLM_REFUSAL_FALLBACKS`;
+set to `false` to turn off). The API key comes from `REDFIRST_LLM_API_KEY`, or the SDK's own
+`ANTHROPIC_API_KEY` / profile resolution when unset. Every attempt records the model, prompt
+name and version, token usage and request id.
+
+The model never sets the verdict. Generated tests are validated statically
+(`validation/policy.py`), run in the sandbox, and classified by `verification/rules.py`.
 
 ## Known limitations
 
@@ -69,6 +85,10 @@ sandbox-images/python/        sandbox image Dockerfile
   then `uv run python -m pytest tests/integration/test_sandbox_docker.py`.
 - The generated test runs from a separate directory, so the repository's own `conftest.py` is
   not applied yet.
+- The Anthropic adapter is tested against a stubbed SDK client only; no real API call has been
+  made. Generation quality on real bugs is unmeasured.
+- The static validator is a hygiene gate, not a security boundary; it can be evaded. It is also
+  strict: tests that need file access, `os` or `sys` are rejected for now.
 - Database code has only been run against SQLite.
 - SQLAlchemy is pinned to 2.0.x because 2.1 needs compiled modules that some Windows
   Application Control policies block.

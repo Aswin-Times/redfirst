@@ -18,9 +18,12 @@ class Settings(BaseSettings):
     data_dir: Path = Path("./data")
 
     llm_provider: str = "anthropic"
-    llm_model: str = "claude-sonnet-5-5"
-    llm_api_key: SecretStr | None = None
-    llm_timeout_seconds: float = 60.0
+    llm_model: str = "claude-opus-5-5"
+    llm_api_key: SecretStr | None = None  # if unset, the SDK resolves ANTHROPIC_API_KEY etc.
+    llm_effort: str = "high"  # low | medium | high | xhigh | max
+    llm_max_tokens: int = 16000
+    llm_refusal_fallbacks: bool = True  # server-side fallback model on a safety refusal
+    llm_timeout_seconds: float = 120.0
     llm_max_retries: int = Field(default=2, ge=0, le=5)
 
     max_generation_attempts: int = Field(default=3, ge=1, le=10)
