@@ -8,6 +8,7 @@ import logging
 import re
 import shutil
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -44,6 +45,7 @@ from redfirst.repos.extract import extract_archive
 from redfirst.repos.layout import detect_layout
 from redfirst.sandbox.executor import ExecRequest, Executor
 from redfirst.sandbox.runner import SandboxRun
+from redfirst.security.redact import redact
 from redfirst.storage.blobs import BlobStore
 from redfirst.validation.policy import module_map
 from redfirst.verification.models import RunResult, Verdict
@@ -179,10 +181,17 @@ class Orchestrator:
         max_attempts = self.d.settings.max_generation_attempts
         feedback = ""
         last_problems: tuple[str, ...] | None = None
+        tokens_used = 0
         for number in range(1, max_attempts + 1):
+            blocked = self._budget_block(tokens_used)
+            if blocked:
+                self._fail({"type": "LLMBudgetExceeded", "detail": blocked, "retryable": True},
+                           "LLM budget exhausted")
+                return
             record = generate_once(self.d.provider, self.d.prompt, number=number,
                                    report_text=ctx.report_text, evidence_text=ctx.evidence_text,
                                    modules=ctx.modules, feedback=feedback)
+            tokens_used += _tokens(record.llm_metadata)
             attempt_id = self._save_attempt(record)
 
             if record.llm_error is not None:
@@ -221,7 +230,9 @@ class Orchestrator:
 
             self._advance(S.VERIFYING_RESULT, f"verifying attempt {number}")
             verdict = classify([r.result for r in runs], contract)
-            self._evidence("verdict", {"attempt": number, **verdict.model_dump(mode="json")})
+            verdict_data = verdict.model_dump(mode="json")
+            verdict_data["evidence"] = [redact(e) for e in verdict_data["evidence"]]
+            self._evidence("verdict", {"attempt": number, **verdict_data})
 
             if verdict.outcome is Outcome.EXECUTION_ERROR:
                 self._fail({"type": "SandboxError", "detail": "; ".join(verdict.evidence)},
@@ -239,6 +250,19 @@ class Orchestrator:
             return
 
     # -- helpers -------------------------------------------------------------------------------
+    def _budget_block(self, tokens_used: int) -> str | None:
+        """Return why the next LLM call must not happen, or None. Checked before every call."""
+        s = self.d.settings
+        if tokens_used >= s.llm_token_budget_per_investigation:
+            return (f"token budget of {s.llm_token_budget_per_investigation} reached "
+                    f"({tokens_used} used)")
+        since = datetime.now(UTC) - timedelta(hours=24)
+        with session_scope(self.d.engine) as session:
+            calls = session.query(Attempt).filter(Attempt.created_at >= since).count()
+        if calls >= s.llm_max_calls_per_day:
+            return f"daily limit of {s.llm_max_calls_per_day} LLM calls reached"
+        return None
+
     def _save_attempt(self, record) -> str:
         with session_scope(self.d.engine) as s:
             inv = s.get(Investigation, self.inv_id)
@@ -276,26 +300,35 @@ class Orchestrator:
         return runs
 
     def _save_run(self, attempt_id: str, index: int, run: SandboxRun) -> None:
-        stdout_ref = self.d.blobs.put_bytes(run.stdout.encode()) if run.stdout else None
-        stderr_ref = self.d.blobs.put_bytes(run.stderr.encode()) if run.stderr else None
+        # Everything persisted or shown later is redacted first; raw output is never stored.
+        stdout, stderr = redact(run.stdout), redact(run.stderr)
+        stdout_ref = self.d.blobs.put_bytes(stdout.encode()) if stdout else None
+        stderr_ref = self.d.blobs.put_bytes(stderr.encode()) if stderr else None
+        parsed = run.result.model_dump(mode="json")
+        parsed["message"] = redact(parsed["message"])
         with session_scope(self.d.engine) as s:
             s.add(ExecutionResult(
                 attempt_id=attempt_id, run_index=index, exit_code=run.exit_code,
                 duration_ms=run.duration_ms, timed_out=run.result.timed_out,
                 oom_killed=run.result.oom_killed, main_status=run.result.main_status,
                 stdout_ref=stdout_ref, stderr_ref=stderr_ref,
-                stdout_excerpt=run.stdout[-_EXCERPT:],
-                parsed={**run.result.model_dump(mode="json"),
-                        "output_truncated": run.output_truncated},
+                stdout_excerpt=stdout[-_EXCERPT:],
+                parsed={**parsed, "output_truncated": run.output_truncated},
             ))
             s.flush()
             s.query(Attempt).filter_by(id=attempt_id).update({"status": "executed"})
 
     @staticmethod
     def _run_detail(run: SandboxRun) -> str:
+        """Feedback for the model: redacted, so secrets printed by repo code never reach it."""
         r = run.result
         head = f"{r.exception_type or ''}: {r.message}".strip(": ")
-        return f"{head}\n{run.stdout[-1000:]}"
+        return redact(f"{head}\n{run.stdout[-1000:]}")
+
+
+def _tokens(metadata: dict[str, Any] | None) -> int:
+    usage = (metadata or {}).get("usage") or {}
+    return int(usage.get("input_tokens", 0)) + int(usage.get("output_tokens", 0))
 
 
 def _worth_repeating(r: RunResult) -> bool:

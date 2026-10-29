@@ -4,6 +4,7 @@ from pathlib import Path
 
 from redfirst.analysis.index import RepoIndex
 from redfirst.analysis.ranking import RankedFile
+from redfirst.security.redact import redact
 
 MAX_FILES = 5
 MAX_FILE_CHARS = 6_000
@@ -54,4 +55,5 @@ def build_evidence(
     if not included:
         parts.append("(no repository file matched the report; importable modules: "
                      + ", ".join(sorted(modules)[:50]) + ")")
-    return "\n\n".join(parts), included
+    # Repository files can contain hard-coded credentials; they must not be sent to the LLM.
+    return redact("\n\n".join(parts)), included

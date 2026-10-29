@@ -10,7 +10,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 from fastapi.responses import PlainTextResponse, Response, StreamingResponse
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -23,6 +23,7 @@ from redfirst.api.schemas import (
 )
 from redfirst.db import service
 from redfirst.db.models import BugReport, Investigation, InvestigationEvent, Project, Repository
+from redfirst.db.retention import NotFinished, delete_investigation, sweep_blobs
 from redfirst.db.session import session_scope
 from redfirst.domain.enums import InvestigationState as S
 from redfirst.domain.state_machine import is_terminal
@@ -31,6 +32,7 @@ from redfirst.repos.layout import detect_layout
 from redfirst.verification.report import build_report, render_markdown
 
 router = APIRouter(prefix="/api")
+_FINISHED = [S.COMPLETED, S.FAILED, S.CANCELLED]
 
 
 def _session(request: Request):
@@ -133,6 +135,11 @@ def create_investigation(project_id: str, body: InvestigationIn, request: Reques
         repo = _get(s, Repository, body.repository_id)
         if repo.project_id != project_id:
             raise HTTPException(400, "repository belongs to a different project")
+        pending = s.scalar(select(func.count()).select_from(Investigation).where(
+            Investigation.state.not_in(_FINISHED)))
+        if pending >= request.app.state.settings.max_pending_investigations:
+            raise HTTPException(429, "too many unfinished investigations; wait for some to "
+                                     "finish or cancel them", headers={"Retry-After": "60"})
         report = BugReport(project_id=project_id, **body.bug_report.model_dump())
         s.add(report)
         s.flush()
@@ -154,6 +161,21 @@ def list_investigations(request: Request, project_id: str | None = None, limit: 
 def get_investigation(inv_id: str, request: Request):
     with _session(request) as s:
         return build_report(s, _get(s, Investigation, inv_id)).model_dump(mode="json")
+
+
+@router.delete("/investigations/{inv_id}", status_code=204)
+def remove_investigation(inv_id: str, request: Request):
+    """Delete a finished investigation, its stored logs and (if unshared) its bug report."""
+    blobs = request.app.state.blobs
+    with _session(request) as s:
+        inv = _get(s, Investigation, inv_id)
+        try:
+            candidates = delete_investigation(s, inv)
+        except NotFinished as exc:
+            raise HTTPException(409, f"{exc}; cancel it before deleting") from exc
+    with _session(request) as s:
+        sweep_blobs(s, blobs, candidates)
+    return Response(status_code=204)
 
 
 @router.post("/investigations/{inv_id}/cancel", response_model=InvestigationOut)

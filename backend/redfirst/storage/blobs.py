@@ -55,6 +55,15 @@ class BlobStore:
             raise FileNotFoundError(f"blob not found: {key}")
         return p
 
+    def delete(self, key: str) -> bool:
+        """Remove a blob; returns whether anything was deleted."""
+        p = self._path(key)
+        try:
+            p.unlink()
+        except FileNotFoundError:
+            return False
+        return True
+
     def read_text(self, key: str, limit: int | None = None) -> str:
         with open(self.path(key), "rb") as fh:
             data = fh.read(limit) if limit else fh.read()

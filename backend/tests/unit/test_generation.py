@@ -110,6 +110,20 @@ def test_report_facts_track_missing_fields():
     assert "Expected behavior: (not provided)" in render_report(r, facts)
 
 
+def test_credentials_in_repository_files_are_not_sent_to_the_model(tmp_path: Path):
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "__init__.py").write_text("")
+    key = "sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789"
+    (tmp_path / "app" / "client.py").write_text(
+        f'API_KEY = "{key}"\nDB_PASSWORD = "hunter2"\n\ndef fetch_client(): return API_KEY\n')
+    idx = index_repo(tmp_path)
+    text, included = build_evidence(
+        tmp_path, idx, rank_files(idx, "fetch client crashes"), module_map(idx, ["."]))
+    assert included == ["app/client.py"]
+    assert key not in text and "hunter2" not in text
+    assert "def fetch_client" in text  # the code itself is still usable
+
+
 def test_evidence_is_bounded_and_selected(tmp_path: Path):
     (tmp_path / "app").mkdir()
     (tmp_path / "app" / "__init__.py").write_text("")

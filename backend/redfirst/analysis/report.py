@@ -9,13 +9,15 @@ _OPTIONAL_FIELDS = ("expected_behavior", "actual_behavior", "reproduction_steps"
 
 
 class BugReportInput(BaseModel):
+    """Field limits bound prompt size, and so LLM cost, for any single request."""
+
     title: str = Field(min_length=1, max_length=300)
-    description: str = ""
-    expected_behavior: str | None = None
-    actual_behavior: str | None = None
-    reproduction_steps: str | None = None
-    stack_trace: str | None = None
-    environment: str | None = None
+    description: str = Field(default="", max_length=20_000)
+    expected_behavior: str | None = Field(default=None, max_length=10_000)
+    actual_behavior: str | None = Field(default=None, max_length=10_000)
+    reproduction_steps: str | None = Field(default=None, max_length=10_000)
+    stack_trace: str | None = Field(default=None, max_length=50_000)
+    environment: str | None = Field(default=None, max_length=5_000)
 
 
 class ReportFacts(BaseModel):

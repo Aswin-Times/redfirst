@@ -4,6 +4,7 @@ The model is faked so results are deterministic; everything else is the producti
 safe extraction, analysis, validation, execution, verification and persistence.
 """
 
+import uuid
 from dataclasses import dataclass
 
 import pytest
@@ -123,7 +124,7 @@ def make_env(tmp_path):
 def seed(env: Env, fixture: str, tmp_path) -> str:
     key = env.deps.blobs.put_file(zip_fixture(fixture, tmp_path))
     with session_scope(env.deps.engine) as s:
-        project = Project(name=f"p-{fixture}-{key[:6]}")
+        project = Project(name=f"p-{fixture}-{uuid.uuid4().hex[:8]}")
         s.add(project)
         s.flush()
         repo = Repository(project_id=project.id, source_type="archive", storage_ref=key, sha256=key)

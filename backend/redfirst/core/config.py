@@ -32,6 +32,12 @@ class Settings(BaseSettings):
     upload_max_bytes: int = 50 * 1024 * 1024
     worker_poll_seconds: float = 2.0
 
+    # Abuse controls. Token budget counts input + output tokens across one investigation's
+    # attempts; the daily cap counts LLM calls across all investigations (rolling 24h).
+    llm_token_budget_per_investigation: int = Field(default=200_000, ge=1)
+    llm_max_calls_per_day: int = Field(default=200, ge=1)
+    max_pending_investigations: int = Field(default=20, ge=1)
+
     max_generation_attempts: int = Field(default=3, ge=1, le=10)
     reproduction_runs: int = Field(default=3, ge=1, le=10)
     retention_days: int = Field(default=30, ge=1)

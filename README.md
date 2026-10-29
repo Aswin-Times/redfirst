@@ -24,7 +24,7 @@ sandbox and the live Claude API have not been exercised yet (see Known limitatio
 | M5 LLM layer, test generation, validation | done with mocked model responses; **never run against the live API** (no key on the dev machine) |
 | M6 Orchestrator, worker, API, export | done; end-to-end tested on 6 fixture repos with scripted model output and local (unsandboxed) pytest execution |
 | M7 Frontend (Next.js) | done; unit-tested, production build passes, and checked in a browser against a running API (live SSE updates, desktop and phone width, light and dark) |
-| M8 Hardening and docs | not started |
+| M8 Hardening and docs | done for what can be tested without Docker or a live model: LLM budgets, input and queue caps, secret redaction, retention, threat model, sandbox notes. The sandbox itself is still unverified |
 
 ## Setup (Windows / macOS / Linux)
 
@@ -80,6 +80,7 @@ evidence, the generated test, per-run logs, the bug report, a timeline and expor
 | POST | `/api/investigations/{id}/cancel` | Cancel a running investigation |
 | GET | `/api/investigations/{id}/export/test` | Download the executed test |
 | GET | `/api/investigations/{id}/export/report?format=json\|md` | Download the report |
+| DELETE | `/api/investigations/{id}` | Delete a finished investigation and its stored logs (409 if still running) |
 
 The API never runs repository code. The worker claims `CREATED` investigations from the
 database (no message broker), drives them through the state machine and commits at every
@@ -100,12 +101,30 @@ backend/redfirst/
   verification/               classification rules, evidence report
   storage/                    content-addressed blob store (archives, logs)
   worker/                     job queue, orchestrator, worker entry point
+  security/                   secret redaction
+docs/                         threat model, sandbox notes, verification rules
 backend/prompts/              versioned prompt templates (name.version.md)
 backend/tests/{unit,security,integration}/
 frontend/                     Next.js web UI (see frontend/README.md)
 fixtures/repos/               small repos with planted bugs for end-to-end tests
 sandbox-images/python/        sandbox image Dockerfile
 ```
+
+## Security and retention
+
+- **Abuse controls** (all configurable, see `.env.example`): bug-report field size caps, a token
+  budget per investigation, a rolling 24-hour cap on LLM calls, and a cap on unfinished
+  investigations (the API answers 429). An exhausted budget ends the investigation as
+  `FAILED` / `EXECUTION_ERROR` with `LLMBudgetExceeded` (retryable).
+- **Redaction:** common credential formats are removed from stored sandbox output, verdict
+  evidence and model feedback, and from repository text before it is sent to the model.
+- **Retention:** finished investigations older than `REDFIRST_RETENTION_DAYS` (default 30) are
+  deleted by `uv run python -m redfirst.db.retention`; run it from cron or a scheduler.
+  Repositories are kept.
+
+Documentation: [threat model](docs/threat-model.md) (every threat, its control and how it was
+verified), [sandbox notes and gVisor/microVM options](docs/sandbox.md), and
+[how the outcome is decided](docs/verification-rules.md).
 
 ## LLM configuration
 
@@ -121,8 +140,11 @@ The model never sets the verdict. Generated tests are validated statically
 
 ## Known limitations
 
-- Docker is not a complete security boundary. The sandbox hardening is documented in
-  `docs/` once M8 lands; gVisor or a microVM is the recommended next layer.
+- Docker is not a complete security boundary; see `docs/sandbox.md` for gVisor and microVM
+  options (recommendations only, none tried here).
+- There is **no authentication**: anyone who can reach the API can read investigations and spend
+  LLM budget. Keep it on localhost. See `docs/threat-model.md` for all residual risks.
+- Redaction only recognises common secret formats.
 - The Docker sandbox runner (`sandbox/runner.py`) and its 7 abuse tests (infinite loop, network,
   read-only repo, fork bomb, memory, huge output) have **never been run**: no Docker on the dev
   machine. The collector and result parsing are tested with a plain local pytest subprocess only.
