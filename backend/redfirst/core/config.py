@@ -26,6 +26,12 @@ class Settings(BaseSettings):
     llm_timeout_seconds: float = 120.0
     llm_max_retries: int = Field(default=2, ge=0, le=5)
 
+    sandbox_image: str = "redfirst-sandbox-python:3.12"
+    sandbox_timeout_seconds: int = Field(default=60, ge=5, le=900)
+    sandbox_memory: str = "512m"
+    upload_max_bytes: int = 50 * 1024 * 1024
+    worker_poll_seconds: float = 2.0
+
     max_generation_attempts: int = Field(default=3, ge=1, le=10)
     reproduction_runs: int = Field(default=3, ge=1, le=10)
     retention_days: int = Field(default=30, ge=1)

@@ -21,7 +21,7 @@ Early development. Backend only; no frontend yet.
 | Persistence (SQLAlchemy models, Alembic migration) | done (tested on SQLite only) |
 | M4 Sandbox runner | code written; collector, result parsing and `docker run` flags tested. Real Docker execution **not yet verified** (Docker not installed on the dev machine) |
 | M5 LLM layer, test generation, validation | done with mocked model responses; **never run against the live API** (no key on the dev machine) |
-| M6 Orchestrator, worker, API, export | not started |
+| M6 Orchestrator, worker, API, export | done; end-to-end tested on 6 fixture repos with scripted model output and local (unsandboxed) pytest execution |
 | M7 Frontend (Next.js) | not started |
 | M8 Hardening and docs | not started |
 
@@ -45,6 +45,34 @@ Apply database migrations (needs a database; see `REDFIRST_DATABASE_URL`):
 uv run python -m alembic upgrade head
 ```
 
+Run the API (binds to 127.0.0.1; there is **no authentication** yet) and, separately, the worker:
+
+```bash
+uv run python -m uvicorn redfirst.api.app:create_app --factory --host 127.0.0.1 --port 8000
+uv run python -m redfirst.worker      # needs Docker + the sandbox image, and an Anthropic key
+```
+
+## API
+
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/api/projects` | Create a project |
+| GET | `/api/projects` | List projects |
+| POST | `/api/projects/{id}/repositories` | Upload a zip/tar.gz (multipart field `archive`); validated by a safe extraction |
+| GET | `/api/projects/{id}/repositories` | List repositories |
+| POST | `/api/projects/{id}/investigations` | Create an investigation from a bug report |
+| GET | `/api/investigations` | History (optional `project_id`) |
+| GET | `/api/investigations/{id}` | Full evidence report |
+| GET | `/api/investigations/{id}/events` | Live progress (Server-Sent Events; honours `Last-Event-ID`) |
+| POST | `/api/investigations/{id}/cancel` | Cancel a running investigation |
+| GET | `/api/investigations/{id}/export/test` | Download the executed test |
+| GET | `/api/investigations/{id}/export/report?format=json\|md` | Download the report |
+
+The API never runs repository code. The worker claims `CREATED` investigations from the
+database (no message broker), drives them through the state machine and commits at every
+stage, so partial investigations remain inspectable. On start-up it marks investigations left
+mid-pipeline by a dead worker as `FAILED` (`WorkerLost`); it does not resume them.
+
 ## Layout
 
 ```
@@ -56,9 +84,12 @@ backend/redfirst/
   llm/                        provider interface, Anthropic adapter, fake provider, prompt loader
   generation/                 evidence assembly, bounded generate -> validate -> repair loop
   validation/                 static policy checks on generated tests
+  verification/               classification rules, evidence report
+  storage/                    content-addressed blob store (archives, logs)
+  worker/                     job queue, orchestrator, worker entry point
 backend/prompts/              versioned prompt templates (name.version.md)
-  verification/               result models and classification rules
 backend/tests/{unit,security,integration}/
+fixtures/repos/               small repos with planted bugs for end-to-end tests
 sandbox-images/python/        sandbox image Dockerfile
 ```
 
@@ -89,7 +120,15 @@ The model never sets the verdict. Generated tests are validated statically
   made. Generation quality on real bugs is unmeasured.
 - The static validator is a hygiene gate, not a security boundary; it can be evaded. It is also
   strict: tests that need file access, `os` or `sys` are rejected for now.
-- Database code has only been run against SQLite.
+- End-to-end tests use a scripted model and run fixture tests with plain local pytest, not the
+  Docker sandbox. They prove the pipeline and verdict logic, not isolation or model quality.
+- The API has no authentication and is meant for single-user local use only.
+- Wrong-return-value bugs are classified REPRODUCED when a predicted `AssertionError` is raised
+  in the main test that calls target code and the control test passes. This is weaker evidence
+  than a failure inside target code, and the report says which kind it was.
+- Repositories that need packages beyond pytest cannot be exercised (no dependency install).
+- Database code has only been run against SQLite; multi-worker claiming relies on PostgreSQL's
+  `SKIP LOCKED` and is untested.
 - SQLAlchemy is pinned to 2.0.x because 2.1 needs compiled modules that some Windows
   Application Control policies block.
 - File ranking quality has only been checked on small synthetic repos.

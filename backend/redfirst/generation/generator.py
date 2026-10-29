@@ -31,6 +31,12 @@ class AttemptRecord:
     validation: ValidationResult | None = None
     llm_metadata: dict[str, Any] | None = None
     error: str | None = None
+    llm_error: LLMError | None = None  # set when the provider failed (not invalid output)
+
+    def problems(self) -> tuple[str, ...]:
+        if self.error:
+            return (self.error,)
+        return tuple(self.validation.errors) if self.validation else ()
 
 
 @dataclass
@@ -41,13 +47,53 @@ class GenerationOutcome:
     retryable: bool = False  # True when stopped by a transient provider failure
 
 
-def _feedback(record: AttemptRecord) -> str:
+def rejection_feedback(record: AttemptRecord) -> str:
     if record.error:
         return f"<previous_attempt_problem>\n{record.error}\n</previous_attempt_problem>\n"
     assert record.validation is not None
     problems = "\n".join(f"- {e}" for e in record.validation.errors)
     return ("<previous_attempt_rejected>\nYour previous test was rejected by the validator "
             f"and was not run:\n{problems}\nFix these problems.\n</previous_attempt_rejected>\n")
+
+
+def execution_feedback(reason: str, detail: str) -> str:
+    """Feedback after a run that could not test the bug (e.g. import or fixture error).
+
+    ``detail`` comes from executing repository code, so it stays inside data tags."""
+    return ("<previous_attempt_problem>\nYour previous test ran but could not exercise the bug "
+            f"({reason}). Output from the run:\n{detail[:1500]}\n</previous_attempt_problem>\n")
+
+
+def generate_once(
+    provider: LLMProvider,
+    prompt: PromptTemplate,
+    *,
+    number: int,
+    report_text: str,
+    evidence_text: str,
+    modules: dict[str, str],
+    feedback: str = "",
+) -> AttemptRecord:
+    """One model call plus validation. Provider failures are captured, not raised."""
+    record = AttemptRecord(number=number)
+    request = prompt.render(
+        report=report_text, evidence=evidence_text, feedback=feedback,
+        allowed_imports=", ".join(sorted(ALLOWED_LIBRARIES)),
+    )
+    try:
+        result = provider.generate(request, GeneratedTestOutput)
+    except LLMInvalidOutput as exc:  # counts as an attempt; may succeed on retry
+        record.error = f"invalid model output: {exc}"
+        return record
+    except LLMError as exc:  # refusal, rejection, outage: the caller must stop
+        record.error = f"{type(exc).__name__}: {exc}"
+        record.llm_error = exc
+        return record
+    record.output = result.output
+    record.llm_metadata = result.metadata(request)
+    record.validation = validate_test(result.output.test_code, modules,
+                                      result.output.target_modules)
+    return record
 
 
 def generate_test(
@@ -59,42 +105,28 @@ def generate_test(
     modules: dict[str, str],
     max_attempts: int,
 ) -> GenerationOutcome:
+    """Generation-only loop (no execution feedback). The orchestrator drives its own loop."""
     outcome = GenerationOutcome()
     feedback = ""
     last_problems: tuple[str, ...] | None = None
     for number in range(1, max_attempts + 1):
-        record = AttemptRecord(number=number)
+        record = generate_once(provider, prompt, number=number, report_text=report_text,
+                               evidence_text=evidence_text, modules=modules, feedback=feedback)
         outcome.attempts.append(record)
-        request = prompt.render(
-            report=report_text, evidence=evidence_text, feedback=feedback,
-            allowed_imports=", ".join(sorted(ALLOWED_LIBRARIES)),
-        )
-        try:
-            result = provider.generate(request, GeneratedTestOutput)
-        except LLMInvalidOutput as exc:  # counts as an attempt; may succeed on retry
-            record.error = f"invalid model output: {exc}"
-            problems: tuple[str, ...] = (record.error,)
-        except LLMError as exc:  # refusal, rejection, outage: stop, never loop on these
-            record.error = f"{type(exc).__name__}: {exc}"
-            outcome.stop_reason = f"llm_{type(exc).__name__}"
-            outcome.retryable = exc.retryable
+        if record.llm_error is not None:
+            outcome.stop_reason = f"llm_{type(record.llm_error).__name__}"
+            outcome.retryable = record.llm_error.retryable
             return outcome
-        else:
-            record.output = result.output
-            record.llm_metadata = result.metadata(request)
-            record.validation = validate_test(result.output.test_code, modules,
-                                              result.output.target_modules)
-            if record.validation.ok:
-                outcome.accepted = record
-                outcome.stop_reason = "accepted"
-                return outcome
-            problems = tuple(record.validation.errors)
-
+        if record.validation is not None and record.validation.ok:
+            outcome.accepted = record
+            outcome.stop_reason = "accepted"
+            return outcome
+        problems = record.problems()
         if problems == last_problems:  # the model is not making progress
             outcome.stop_reason = "repeated_failure"
             return outcome
         last_problems = problems
-        feedback = _feedback(record)
+        feedback = rejection_feedback(record)
     outcome.stop_reason = "attempts_exhausted"
     return outcome
 

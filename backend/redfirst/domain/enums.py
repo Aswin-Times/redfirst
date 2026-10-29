@@ -38,6 +38,7 @@ class OutcomeReason(StrEnum):
     NO_EXPECTED_BEHAVIOR = "no_expected_behavior"
     TARGET_NOT_EXERCISED = "target_not_exercised"
     GENERATION_EXHAUSTED = "generation_exhausted"
+    MODEL_REFUSED = "model_refused"
     UNCLASSIFIABLE = "unclassifiable"
 
 

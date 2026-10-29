@@ -8,6 +8,8 @@ from redfirst.domain.enums import OutcomeReason as R
 from redfirst.domain.enums import TestPhase, TestStatus
 from redfirst.verification.models import RunResult, TestContract, Verdict
 
+MAIN_TEST_NAME = "test_reproduces_bug"  # must match sandbox.results.MAIN_TEST
+
 
 def _signature_matches(run: RunResult, contract: TestContract) -> bool:
     sig = contract.expected_signature
@@ -21,6 +23,21 @@ def _signature_matches(run: RunResult, contract: TestContract) -> bool:
 def _hits_target(run: RunResult, contract: TestContract) -> bool:
     targets = [t.replace("\\", "/") for t in contract.target_modules]
     return any(f.file.replace("\\", "/").endswith(t) for f in run.frames for t in targets)
+
+
+def _wrong_value_in_main_test(run: RunResult, contract: TestContract) -> bool:
+    """A wrong-return-value bug fails on the test's own assertion, not inside target code.
+
+    Accepted only when an AssertionError was both predicted and observed, it was raised
+    directly in the main test, and the validator established that test calls target code.
+    """
+    return (
+        contract.expected_signature.exception_type == "AssertionError"
+        and run.exception_type == "AssertionError"
+        and contract.exercises_target
+        and bool(run.frames)
+        and run.frames[-1].function == MAIN_TEST_NAME
+    )
 
 
 def _classify_run(run: RunResult, contract: TestContract) -> Verdict:
@@ -55,14 +72,17 @@ def _classify_run(run: RunResult, contract: TestContract) -> Verdict:
     if run.main_phase is not TestPhase.CALL:
         return Verdict(outcome=O.INCONCLUSIVE, reason=R.UNRELATED_FAILURE,
                        evidence=[f"failure in phase {run.main_phase}"])
-    if not _hits_target(run, contract):
+    in_target = _hits_target(run, contract)
+    if not in_target and not _wrong_value_in_main_test(run, contract):
         return Verdict(outcome=O.INCONCLUSIVE, reason=R.UNRELATED_FAILURE,
                        evidence=["no traceback frame in a target module"])
     if not _signature_matches(run, contract):
         return Verdict(outcome=O.INCONCLUSIVE, reason=R.SIGNATURE_MISMATCH,
                        evidence=[f"got {run.exception_type}: {run.message[:200]}"])
+    where = ("failure raised inside target code" if in_target else
+             "assertion on target code's result failed in the main test")
     return Verdict(outcome=O.REPRODUCED, reason=R.MATCHING_FAILURE,
-                   evidence=[f"{run.exception_type}: {run.message[:200]}",
+                   evidence=[f"{run.exception_type}: {run.message[:200]}", where,
                              *[f"frame {f.file}:{f.function}" for f in run.frames[-3:]]])
 
 

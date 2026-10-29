@@ -22,8 +22,9 @@ ALLOWED_TRANSITIONS: dict[S, frozenset[S]] = {
 # Bounded regeneration loops (the attempt limit is enforced by the orchestrator).
 ALLOWED_TRANSITIONS[S.VALIDATING_TEST] |= {S.GENERATING_TEST}
 ALLOWED_TRANSITIONS[S.VERIFYING_RESULT] |= {S.GENERATING_TEST}
-# A run that exhausts its attempts still completes, with an INCONCLUSIVE outcome.
+# A run that exhausts its attempts (or is refused by the model) still completes, INCONCLUSIVE.
 ALLOWED_TRANSITIONS[S.GENERATING_TEST] |= {S.COMPLETED}
+ALLOWED_TRANSITIONS[S.VALIDATING_TEST] |= {S.COMPLETED}
 for _t in TERMINAL_STATES:
     ALLOWED_TRANSITIONS[_t] = frozenset()
 

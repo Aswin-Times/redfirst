@@ -101,6 +101,39 @@ def test_failure_outside_target_is_unrelated():
     check([r], outcome=O.INCONCLUSIVE, reason=R.UNRELATED_FAILURE)
 
 
+def _assert_run(function="test_reproduces_bug"):
+    return run(exception_type="AssertionError", message="assert 0.0 == 0.1",
+               frames=[TracebackFrame(file="/gen/test_redfirst.py", function=function)])
+
+
+def test_wrong_value_assertion_in_main_test_is_reproduced():
+    c = contract(expected_signature=FailureSignature(exception_type="AssertionError"))
+    v = check([_assert_run()] * 3, c, outcome=O.REPRODUCED, reason=R.MATCHING_FAILURE)
+    assert any("assertion on target" in e for e in v.evidence)
+
+
+def test_wrong_value_allowance_requires_target_exercised():
+    c = contract(expected_signature=FailureSignature(exception_type="AssertionError"),
+                 exercises_target=False)
+    check([_assert_run()], c, outcome=O.INCONCLUSIVE, reason=R.UNRELATED_FAILURE)
+
+
+def test_wrong_value_allowance_requires_predicted_assertion():
+    check([_assert_run()], outcome=O.INCONCLUSIVE, reason=R.UNRELATED_FAILURE)
+
+
+def test_assertion_in_helper_not_main_test_is_unrelated():
+    c = contract(expected_signature=FailureSignature(exception_type="AssertionError"))
+    check([_assert_run(function="helper")], c, outcome=O.INCONCLUSIVE,
+          reason=R.UNRELATED_FAILURE)
+
+
+def test_main_test_name_matches_sandbox_constant():
+    from redfirst.sandbox.results import MAIN_TEST
+    from redfirst.verification.rules import MAIN_TEST_NAME
+    assert MAIN_TEST == MAIN_TEST_NAME
+
+
 def test_wrong_exception_type_is_signature_mismatch():
     check([run(exception_type="ValueError")],
           outcome=O.INCONCLUSIVE, reason=R.SIGNATURE_MISMATCH)
