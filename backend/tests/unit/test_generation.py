@@ -148,3 +148,14 @@ def test_prompt_v2_renders_and_states_the_stricter_validator_rules():
     assert "importorskip" in req.system and "io.open" in req.system and "_underscore" in req.system
     # untrusted text still only appears in the user message
     assert "<bug_report>\nR\n</bug_report>" in req.user and "R\n" not in req.system
+
+
+def test_prompt_v3_states_the_assertion_rule_and_the_worker_uses_it():
+    from redfirst.worker import __main__ as worker_main
+
+    assert worker_main.PROMPT == ("generate_test", "v3")
+    v3 = load_prompt("generate_test", "v3")
+    req = v3.render(report="R", evidence="E", feedback="", allowed_imports="pytest")
+    assert req.prompt_version == "v3"
+    assert "assert False" in req.system and "unittest" in req.system and "request" in req.system
+    assert "R\n" not in req.system  # untrusted text still only in the user message

@@ -36,14 +36,16 @@ def _wrong_value_in_main_test(run: RunResult, contract: TestContract) -> bool:
     """A wrong-return-value bug fails on the test's own assertion, not inside target code.
 
     Accepted only when an AssertionError was both predicted and observed, it was raised
-    directly in the main test of the generated test file, and the validator established that
-    the test calls target code.
+    directly in the main test of the generated test file, the validator established that the
+    test calls target code, and that every assertion in the main test depends on the result of
+    target code (so `assert False` can never count as a reproduction).
     """
     last = run.frames[-1] if run.frames else None
     return (
         contract.expected_signature.exception_type == "AssertionError"
         and run.exception_type == "AssertionError"
         and contract.exercises_target
+        and contract.asserts_on_target_result
         and last is not None
         and last.in_generated_test
         and last.function == MAIN_TEST_NAME
@@ -54,9 +56,10 @@ def _classify_run(run: RunResult, contract: TestContract) -> Verdict:
     if run.runner_crashed:
         return Verdict(outcome=O.EXECUTION_ERROR, reason=R.RUNNER_FAILURE,
                        evidence=[run.runner_error or "the runner could not run the test"])
-    if run.timed_out or run.oom_killed:  # killed runs are judged on the kill, not the report
-        return Verdict(outcome=O.INCONCLUSIVE, reason=R.RESOURCE_LIMIT,
-                       evidence=["timeout" if run.timed_out else "out of memory"])
+    if run.timed_out or run.oom_killed or run.output_flooded:  # judged on the kill, not the report
+        what = ("timeout" if run.timed_out else "out of memory" if run.oom_killed
+                else "output limit exceeded (the run was stopped)")
+        return Verdict(outcome=O.INCONCLUSIVE, reason=R.RESOURCE_LIMIT, evidence=[what])
     if not run.report_parsed or run.integrity_errors:
         problems = run.integrity_errors or ["no usable structured report"]
         if run.exit_code in PYTEST_INTERNAL_ERRORS:

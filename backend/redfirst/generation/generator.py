@@ -148,5 +148,6 @@ def to_contract(
         ),
         has_control_test=validation.has_control_test,
         exercises_target=validation.exercises_target,
+        asserts_on_target_result=validation.asserts_on_target_result,
         expected_behavior_known=expected_behavior_known,
     )

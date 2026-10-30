@@ -119,3 +119,37 @@ def test_missing_main_test_is_inconclusive(tmp_path):
 def test_runner_crash_is_execution_error(flag):
     v = classify([build_run_result(None, **{flag: True})], CONTRACT)
     assert v.outcome is O.EXECUTION_ERROR
+
+
+# --- M9.1 R7: a repository file named like a stdlib module must not break the test run ---------
+SHADOWING = {
+    "app/__init__.py": "",
+    "app/users.py": 'def register(data):\n    return data["username"]\n',
+    "types.py": "SHADOW = True\n",       # stdlib module names, at the repository root
+    "logging.py": "SHADOW = True\n",
+    "re.py": "SHADOW = True\n",
+}
+
+
+def test_repository_modules_named_like_stdlib_modules_do_not_break_pytest(tmp_path):
+    repo = tmp_path / "repo"
+    for name, text in SHADOWING.items():
+        p = repo / name
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(text)
+    code = IMPORT + CONTROL + (
+        "import types, re\n\n"
+        "def test_reproduces_bug():\n"
+        "    assert hasattr(types, 'ModuleType') and hasattr(re, 'compile')\n"  # stdlib, not repo
+        '    register({"email": "x"})\n')
+    run = local_executor(ExecRequest(repo_dir=repo, test_code=code, work_dir=tmp_path / "work",
+                                     source_roots=(".",)))
+    assert run.result.integrity_errors == [], (run.result, run.stderr[-400:])
+    v = classify([run.result], CONTRACT)
+    assert (v.outcome, v.reason) == (O.REPRODUCED, R.MATCHING_FAILURE), v
+
+
+def test_repository_package_is_still_importable_after_the_path_change(tmp_path):
+    verdict_ = verdict(tmp_path, IMPORT + CONTROL + (
+        'def test_reproduces_bug():\n    register({"email": "x"})\n'))
+    assert verdict_.outcome is O.REPRODUCED

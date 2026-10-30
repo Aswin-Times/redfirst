@@ -13,6 +13,10 @@ class Settings(BaseSettings):
     env: str = "development"
     api_host: str = "127.0.0.1"
     api_port: int = 8000
+    # Accepted Host header values (port ignored). Anything else gets HTTP 400, which stops a
+    # web page from reading the unauthenticated API through DNS rebinding. Add the hostname
+    # you serve REDFIRST under if you expose it beyond localhost (and add authentication).
+    allowed_hosts: list[str] = ["localhost", "127.0.0.1"]
 
     database_url: str = "postgresql+psycopg://redfirst:redfirst@localhost:5432/redfirst"
     data_dir: Path = Path("./data")

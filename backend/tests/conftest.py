@@ -34,11 +34,11 @@ def local_executor(request: ExecRequest) -> SandboxRun:
     repo_root = request.repo_dir.resolve()
     roots = [str((repo_root / r).resolve()) for r in request.source_roots]
     env = {k: os.environ[k] for k in _ENV_PASSTHROUGH if k in os.environ}
-    env.update(PYTHONPATH=os.pathsep.join([str(PLUGIN_DIR), *roots]),
+    env.update(PYTHONPATH=str(PLUGIN_DIR), REDFIRST_SOURCE_ROOTS=os.pathsep.join(roots),
                REDFIRST_REPORT_PATH=str(out / "report.json"), PYTHONDONTWRITEBYTECODE="1")
     started = time.monotonic()
     proc = subprocess.run(
-        [sys.executable, "-m", "pytest", str(test_file), "-p", "collector_plugin",
+        [sys.executable, "-P", "-m", "pytest", str(test_file), "-p", "collector_plugin",
          "-p", "no:cacheprovider", "--rootdir", str(gen), "-q", "--tb=short"],
         cwd=repo_root, env=env, capture_output=True, encoding="utf-8", errors="replace",
         timeout=120, check=False,
@@ -63,3 +63,9 @@ def zip_fixture(name: str, dest: Path) -> Path:
 @pytest.fixture
 def fixture_zip(tmp_path):
     return lambda name: zip_fixture(name, tmp_path)
+
+
+@pytest.fixture(autouse=True)
+def _allow_testserver_host(monkeypatch):
+    """The API only accepts known Host headers; Starlette's TestClient sends 'testserver'."""
+    monkeypatch.setenv("REDFIRST_ALLOWED_HOSTS", '["testserver","localhost","127.0.0.1"]')

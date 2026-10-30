@@ -18,7 +18,7 @@ code and whether a control test exists.
 
 ### The report is untrusted; runner facts are not
 
-The report comes from inside the test process, where the code under test can rewrite it. The
+The report comes from inside the test process, where the code under test can rewrite it. It reaches the host as text printed by a container wrapper after pytest exits, between markers carrying a random per-run nonce (the last such block wins). The
 runner therefore also records facts it observes itself: the exit code and OOM flag from the
 container runtime, and whether it had to kill the run. Before any rule below looks at test
 outcomes, the report must pass a strict schema and agree with those facts:
@@ -67,11 +67,17 @@ report, so its absence is not evidence of an infrastructure failure. Pytest inte
 errors (rule 3) still count as runner failures.
 
 **Wrong-value bugs.** A function that returns the wrong value fails on the test's own
-`assert`, not inside the target code. Rule 12 accepts this only when an `AssertionError` was
-both predicted and observed, it was raised directly in `test_reproduces_bug` *in the generated
-test file*, the validator confirmed that test calls target code, and the control test passed.
-The report states which kind of evidence was used, because it is weaker than a failure inside
-target code.
+`assert`, not inside the target code. Rule 12 accepts this only when all of these hold: an
+`AssertionError` was both predicted and observed; it was raised directly in
+`test_reproduces_bug` *in the generated test file*; the validator confirmed the test calls
+target code; and the validator confirmed that **every assertion in the main test depends on a
+value returned by target code** (`asserts_on_target_result`). The last condition exists because
+a test that fails whatever the repository does (`assert False`, `assert 1 == 2`,
+`raise AssertionError`) would otherwise count as a reproduction on a bug-free repository; such
+tests are rejected before they run. The check is a heuristic (it follows names assigned from
+target calls through assignments, loops and `with ... as`) and cannot tell an assertion that
+mentions a result but is still always false. The report states which kind of evidence was used,
+because it is weaker than a failure inside target code.
 
 ## Repeated runs
 

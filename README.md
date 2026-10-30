@@ -26,6 +26,7 @@ sandbox and the live Claude API have not been exercised yet (see Known limitatio
 | M7 Frontend (Next.js) | done; unit-tested, production build passes, and checked in a browser against a running API (live SSE updates, desktop and phone width, light and dark) |
 | M8 Hardening and docs | done for what can be tested without Docker or a live model: LLM budgets, input and queue caps, secret redaction, retention, threat model, sandbox notes. The sandbox itself is still unverified |
 | M9 Correctness and verdict integrity | done, uncommitted: canonical target matching, untrusted-report checks, stricter validator, conditional state transitions, worker leases, container lifecycle (OOM detection), async SSE, archive limits, LLM accounting, pagination bounds, retention order, and a CI workflow for Docker. **Docker tests have still never run** (no Docker locally; CI not yet run) |
+| M9.1 Review fixes (R1-R8) | done, uncommitted: assertions must depend on target results, validator bypasses closed, Host-header validation, SQLite-safe migrations, stdlib-shadowing fix, bounded output and no writable host mount for the sandbox, stronger Docker tests (17). **Still no Docker or PostgreSQL run** |
 
 ## Setup (Windows / macOS / Linux)
 
@@ -146,6 +147,13 @@ sandbox-images/python/        sandbox image Dockerfile
   budget per investigation, a rolling 24-hour cap on LLM calls, and a cap on unfinished
   investigations (the API answers 429). An exhausted budget ends the investigation as
   `FAILED` / `EXECUTION_ERROR` with `LLMBudgetExceeded` (retryable).
+- **Host header validation:** the API and the web UI only answer requests whose Host is in
+  `REDFIRST_ALLOWED_HOSTS` (default `localhost`, `127.0.0.1`; port ignored). The UI needs its
+  own check (`frontend/src/proxy.ts`) because its `/api/*` proxy rewrites the Host header, so
+  the API alone would never see what the browser sent (verified on a running stack). This
+  stops DNS-rebinding reads. It does not stop plain cross-site requests and is not
+  authentication. Set the same variable in `frontend/.env.local` if you add hosts, and only
+  together with real authentication.
 - **Untrusted test reports:** the pytest report is written inside the test process, so REDFIRST
   treats it as untrusted input: strict schema, size limit, no symlinks, and a cross-check against
   the exit code and OOM state read from the container runtime. Any contradiction ends the
@@ -183,13 +191,15 @@ The model never sets the verdict. Generated tests are validated statically
 - There is **no authentication**: anyone who can reach the API can read investigations and spend
   LLM budget. Keep it on localhost. See `docs/threat-model.md` for all residual risks.
 - Redaction only recognises common secret formats.
-- The Docker sandbox runner (`sandbox/runner.py`) and its 9 Docker tests (success, failure,
-  timeout, OOM, network, read-only repo, fork bomb, huge output, report tampering) have **never
+- The Docker sandbox runner (`sandbox/runner.py`) and its 17 Docker tests (success, failure,
+  timeout, OOM, process limit, report tmpfs, network, read-only mounts, privileges, secrets,
+  output, tampering) have **never
   been run**: no Docker on the dev machine, and the CI workflow has not run yet. The runner's
   control flow is unit-tested against a fake docker CLI only.
 - A verdict on an untrusted repository can be forged by repository code that rewrites the test
-  report *and* exits with the matching status. Detection covers naive tampering only; see
-  `docs/threat-model.md`.
+  report so it matches the exit status the run really had. The attacker does not need to
+  control the exit code: a genuine unrelated failure already exits 1. Detection covers
+  contradictions only (two strict-xfail tests document the gap); see `docs/threat-model.md`.
 - The generated test runs from a separate directory, so the repository's own `conftest.py` is
   not applied yet.
 - The Anthropic adapter is tested against a stubbed SDK client only; no real API call has been

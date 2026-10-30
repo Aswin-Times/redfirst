@@ -6,6 +6,7 @@ it on a shared network without adding auth.
 
 from fastapi import FastAPI
 from sqlalchemy import Engine
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from redfirst.api.routes import router
 from redfirst.core.config import Settings, get_settings
@@ -19,6 +20,7 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
     app.state.settings = settings
     app.state.engine = engine or make_engine(settings.database_url)
     app.state.blobs = BlobStore(settings.data_dir / "blobs")
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.allowed_hosts)
     app.include_router(router)
 
     @app.get("/health")

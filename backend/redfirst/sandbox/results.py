@@ -30,8 +30,12 @@ from redfirst.verification.paths import repo_relative, same_path
 MAIN_TEST = "test_reproduces_bug"
 CONTROL_TEST = "test_control"
 GENERATED_TEST_FILE = "test_redfirst.py"
-MAX_REPORT_BYTES = 1024 * 1024
+MAX_REPORT_BYTES = 256 * 1024  # the runner keeps this much (and more) of the output's tail
 MAX_FRAMES = 200  # the collector keeps the innermost frames
+# The container's wrapper prints the report between these markers after pytest has exited.
+# {nonce} is random per run; the LAST block carrying it is the report (see extract_report_block).
+REPORT_BEGIN = "@@REDFIRST-REPORT-BEGIN {nonce}@@"
+REPORT_END = "@@REDFIRST-REPORT-END {nonce}@@"
 PYTEST_INTERNAL_ERRORS = (3, 4)  # pytest "internal error" and "usage error" exit codes
 
 _PHASES = (("setup", TestPhase.SETUP), ("call", TestPhase.CALL), ("teardown", TestPhase.TEARDOWN))
@@ -101,10 +105,51 @@ def read_report(path: Path, max_bytes: int = MAX_REPORT_BYTES) -> tuple[Any, str
         return None, f"the report could not be read ({type(exc).__name__})"
     if len(raw) > max_bytes:
         return None, f"the report is larger than {max_bytes} bytes"
+    return decode_report(raw)
+
+
+def decode_report(raw: bytes) -> tuple[Any, str | None]:
+    """Parse report bytes as untrusted JSON. Returns ``(data, problem)``."""
     try:
         return json.loads(raw.decode("utf-8")), None
     except (UnicodeDecodeError, ValueError, RecursionError):
         return None, "the report is not valid JSON"
+
+
+def extract_report_block(output: bytes, nonce: str,
+                         max_bytes: int = MAX_REPORT_BYTES) -> tuple[bytes | None, str | None]:
+    """Find the report in the container's output. Returns ``(raw_report, problem)``.
+
+    The wrapper prints the report after pytest (and everything it started) has exited, so the
+    last block carrying this run's random nonce is authoritative. Text printed earlier by the
+    code under test, including fake blocks, is ignored; blocks with another nonce never match.
+    """
+    begin = REPORT_BEGIN.format(nonce=nonce).encode()
+    end = REPORT_END.format(nonce=nonce).encode()
+    start = output.rfind(begin)
+    if start < 0:
+        return None, "no report block in the container's output"
+    body_start = start + len(begin)
+    stop = output.find(end, body_start)
+    if stop < 0:
+        return None, "the report block is incomplete (cut off or larger than the captured tail)"
+    raw = output[body_start:stop].strip(b"\r\n")
+    if len(raw) > max_bytes:
+        return None, f"the report is larger than {max_bytes} bytes"
+    return raw, None
+
+
+def strip_report_block(text: str, nonce: str) -> str:
+    """Output as shown to users: the final report block removed, everything else untouched."""
+    begin = REPORT_BEGIN.format(nonce=nonce)
+    end = REPORT_END.format(nonce=nonce)
+    start = text.rfind(begin)
+    if start < 0:
+        return text
+    stop = text.find(end, start)
+    if stop < 0:
+        return text[:start].rstrip("\r\n")
+    return (text[:start].rstrip("\r\n") + text[stop + len(end):]).strip("\r\n")
 
 
 # -- validation and cross-checks -----------------------------------------------------------------
@@ -195,6 +240,7 @@ def build_run_result(
     oom_killed: bool = False,
     runner_crashed: bool = False,
     runner_error: str | None = None,
+    output_flooded: bool = False,
     repo_root: str | None = None,
     test_file: str | None = None,
     test_name: str = GENERATED_TEST_FILE,
@@ -207,10 +253,10 @@ def build_run_result(
     if runner_crashed:
         return RunResult(runner_crashed=True, runner_error=runner_error, report_parsed=False,
                          exit_code=exit_code)
-    if timed_out or oom_killed:
+    if timed_out or oom_killed or output_flooded:
         # A killed process may leave no (or a partial) report; it is not used at all.
-        return RunResult(timed_out=timed_out, oom_killed=oom_killed, exit_code=exit_code,
-                         report_parsed=False)
+        return RunResult(timed_out=timed_out, oom_killed=oom_killed, output_flooded=output_flooded,
+                         exit_code=exit_code, report_parsed=False)
     if exit_code is None:
         return RunResult(runner_crashed=True, report_parsed=False,
                          runner_error="the runner did not observe the test process's exit code")

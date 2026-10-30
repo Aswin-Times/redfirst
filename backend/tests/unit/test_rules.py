@@ -133,7 +133,8 @@ def _assert_run(function="test_reproduces_bug"):
 
 
 def test_wrong_value_assertion_in_main_test_is_reproduced():
-    c = contract(expected_signature=FailureSignature(exception_type="AssertionError"))
+    c = contract(expected_signature=FailureSignature(exception_type="AssertionError"),
+                 asserts_on_target_result=True)
     v = check([_assert_run()] * 3, c, outcome=O.REPRODUCED, reason=R.MATCHING_FAILURE)
     assert any("assertion on target" in e for e in v.evidence)
 
@@ -149,7 +150,8 @@ def test_wrong_value_allowance_requires_predicted_assertion():
 
 
 def test_assertion_in_helper_not_main_test_is_unrelated():
-    c = contract(expected_signature=FailureSignature(exception_type="AssertionError"))
+    c = contract(expected_signature=FailureSignature(exception_type="AssertionError"),
+                 asserts_on_target_result=True)
     check([_assert_run(function="helper")], c, outcome=O.INCONCLUSIVE,
           reason=R.UNRELATED_FAILURE)
 
@@ -198,7 +200,8 @@ def test_reproduced_evidence_names_the_matching_target_frame():
 
 def test_wrong_value_allowance_requires_the_generated_test_file():
     # A repository function that happens to be called test_reproduces_bug is not the test.
-    c = contract(expected_signature=FailureSignature(exception_type="AssertionError"))
+    c = contract(expected_signature=FailureSignature(exception_type="AssertionError"),
+                 asserts_on_target_result=True)
     r = run(exception_type="AssertionError", message="assert 1 == 2", frames=[TracebackFrame(
         file="/repo/app/helpers.py", function="test_reproduces_bug", repo_path="app/helpers.py")])
     check([r], c, outcome=O.INCONCLUSIVE, reason=R.UNRELATED_FAILURE)
@@ -238,3 +241,16 @@ def test_runner_error_in_any_run_dominates():
 
 def test_no_runs_is_execution_error():
     check([], outcome=O.EXECUTION_ERROR, reason=R.RUNNER_FAILURE)
+
+
+# --- M9.1 R1: the wrong-value allowance needs a validator-established target-dependent assert --
+def test_wrong_value_allowance_requires_assertion_on_target_result():
+    c = contract(expected_signature=FailureSignature(exception_type="AssertionError"),
+                 asserts_on_target_result=False)
+    check([_assert_run()] * 3, c, outcome=O.INCONCLUSIVE, reason=R.UNRELATED_FAILURE)
+
+
+def test_wrong_value_allowance_with_target_dependent_assertion_still_reproduces():
+    c = contract(expected_signature=FailureSignature(exception_type="AssertionError"),
+                 asserts_on_target_result=True)
+    check([_assert_run()] * 3, c, outcome=O.REPRODUCED, reason=R.MATCHING_FAILURE)

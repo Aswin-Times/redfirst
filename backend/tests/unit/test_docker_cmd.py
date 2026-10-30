@@ -1,11 +1,15 @@
+import re
 from pathlib import Path
 
 from redfirst.sandbox.docker_cmd import SandboxSpec, build_docker_args
+from redfirst.sandbox.results import REPORT_BEGIN, REPORT_END
+
+NONCE = "a1b2c3d4e5f60718293a4b5c6d7e8f90"
 
 
 def args(**kw):
     spec = SandboxSpec(image="img", name="c1", repo_dir=Path("/r"), gen_dir=Path("/g"),
-                       plugin_dir=Path("/p"), out_dir=Path("/o"), **kw)
+                       plugin_dir=Path("/p"), nonce=NONCE, **kw)
     return build_docker_args(spec)
 
 
@@ -26,13 +30,50 @@ def test_isolation_flags_present():
     assert "noexec" in p["--tmpfs"]
 
 
-def test_only_the_output_mount_is_writable():
+def mounts(a):
+    return [a[i + 1] for i, x in enumerate(a) if x == "-v"]
+
+
+def test_no_host_directory_is_writable_by_the_container():
+    """M9.1 R3: a writable host bind mount is unbounded (one 10 MB file at a time, forever)."""
+    m = mounts(args())
+    assert len(m) == 3 and all(x.endswith(":ro") for x in m), m
+    assert not any(":/out" in x for x in m)
+
+
+def test_report_area_is_a_small_tmpfs_inside_the_container():
     a = args()
-    mounts = [a[i + 1] for i, x in enumerate(a) if x == "-v"]
-    assert len(mounts) == 4
-    writable = [m for m in mounts if m.endswith(":rw")]
-    assert writable == [f"{Path('/o')}:/out:rw"]
-    assert all(m.endswith(":ro") for m in mounts if m not in writable)
+    tmpfs = [a[i + 1] for i, x in enumerate(a) if x == "--tmpfs"]
+    out = next(t for t in tmpfs if t.startswith("/out:"))
+    size = re.search(r"size=(\d+)m", out)
+    assert size and int(size.group(1)) <= 4, out
+    assert "noexec" in out and "nosuid" in out
+    assert "REDFIRST_REPORT_PATH=/out/report.json" in a
+
+
+def test_docker_log_file_is_capped():
+    p = pairs(args())
+    assert p["--log-driver"] == "json-file"
+    opts = [args()[i + 1] for i, x in enumerate(args()) if x == "--log-opt"]
+    assert "max-size=1m" in opts and "max-file=1" in opts
+
+
+def test_report_is_printed_by_a_wrapper_after_pytest_exits_between_nonce_markers():
+    a = args()
+    i = a.index("sh")
+    assert a[i + 1] == "-c"
+    script = a[i + 2]
+    assert REPORT_BEGIN.format(nonce=NONCE) in script and REPORT_END.format(nonce=NONCE) in script
+    assert "cat /out/report.json" in script and script.rstrip().endswith('exit "$status"')
+    # pytest's exit status is preserved, and the pytest command is passed as arguments
+    assert '"$@"' in script
+    j = a.index("python")
+    assert a[j:j + 4] == ["python", "-P", "-m", "pytest"] and j > i + 2
+
+
+def test_wrapper_script_contains_no_untrusted_text():
+    script = args()[args().index("-c") + 1]
+    assert "/g" not in script and "img" not in script  # only constants and the nonce
 
 
 def test_no_docker_socket_privilege_or_host_env():
@@ -44,12 +85,28 @@ def test_no_docker_socket_privilege_or_host_env():
     assert not any("KEY" in e or "TOKEN" in e or "SECRET" in e for e in envs)
 
 
-def test_source_roots_go_on_pythonpath():
-    a = args(source_roots=("src", "."))
-    env = next(x for x in a if x.startswith("PYTHONPATH="))
-    assert env == "PYTHONPATH=/plugin:/repo/src:/repo"
-
-
 def test_container_is_not_auto_removed_so_its_state_can_be_inspected():
     # D9: with --rm Docker deletes the container on exit, before the runner can read OOMKilled.
     assert "--rm" not in args()
+
+
+# --- M9.1 R7: repository modules must never shadow the stdlib or pytest's own dependencies -----
+def test_pythonpath_holds_only_the_collector_and_repo_roots_go_in_their_own_variable():
+    a = args(source_roots=("src", "."))
+    env = dict(x.split("=", 1) for x in a if x.startswith(("PYTHONPATH=", "REDFIRST_")))
+    assert env["PYTHONPATH"] == "/plugin"  # repo roots here would precede the stdlib
+    assert env["REDFIRST_SOURCE_ROOTS"] == "/repo/src:/repo"
+
+
+def test_interpreter_runs_in_safe_path_mode_so_the_working_directory_is_not_on_sys_path():
+    a = args()
+    i = a.index("python")
+    assert a[i + 1:i + 4] == ["-P", "-m", "pytest"]
+
+
+def test_wrapper_kills_every_other_process_before_printing_the_report():
+    """A child left running by the tests must not be able to print a block after the real one."""
+    script = args()[args().index("-c") + 1]
+    kill = script.index("os.kill(-1, signal.SIGKILL)")
+    assert kill < script.index(REPORT_BEGIN.format(nonce=NONCE))
+    assert script.index("status=$?") < kill  # pytest's exit status is captured first

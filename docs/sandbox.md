@@ -7,38 +7,58 @@
 | Control | Flag |
 |---|---|
 | No network | `--network none` |
-| Immutable root filesystem | `--read-only`, plus `--tmpfs /tmp:rw,noexec,nosuid,size=64m` |
+| Immutable root filesystem, small tmpfs areas | `--read-only`, plus `--tmpfs /tmp:rw,noexec,nosuid,size=64m` and `--tmpfs /out:rw,noexec,nosuid,size=2m,mode=1777` |
 | Unprivileged user | `--user 10001:10001` |
 | No capabilities, no privilege gain | `--cap-drop ALL`, `--security-opt no-new-privileges` |
 | Memory, swap, CPU, processes | `--memory 512m --memory-swap 512m --cpus 1 --pids-limit 128` |
-| File and descriptor limits | `--ulimit nofile=256:256 --ulimit fsize=10000000` |
+| File, descriptor and log limits | `--ulimit nofile=256:256 --ulimit fsize=10000000`, `--log-driver json-file --log-opt max-size=1m --log-opt max-file=1` |
 | Repository read-only | `-v <repo>:/repo:ro` (generated test and collector also `:ro`) |
-| One writable mount | `-v <out>:/out:rw`, receives only the JSON report |
-| No secrets, no Docker socket | environment holds only `PYTHONPATH`, the report path and `PYTHONDONTWRITEBYTECODE` |
+| No writable host mount | the repository, generated test and collector plugin are bind-mounted `:ro`; the only writable places are the two tmpfs above, inside the container |
+| No secrets, no Docker socket | environment holds only `PYTHONPATH` (the collector), `REDFIRST_SOURCE_ROOTS`, the report path and `PYTHONDONTWRITEBYTECODE` |
 
 ### Container lifecycle (`sandbox/runner.py`)
 
-1. The run directory is created private to the worker (`0700`); inside it the generated-test
-   directory is `0755` and the output directory `0777`, because the container's uid does not own
-   host directories. Inside the container only the bind-mounted directories themselves are
-   visible, never their host parents. The worker's umask must let other users read the
-   extracted repository (the default `022` does).
-2. `docker run` starts the container **without `--rm`**, with the wall-clock timeout enforced by
-   the worker. On timeout the container is killed and waited for.
-3. The runner reads the container's state from Docker (`docker inspect`): exit code, `OOMKilled`,
+1. The run directory is created private to the worker (`0700`) and holds only the generated
+   test (`gen/`, `0755`). **Nothing the container writes ever reaches the host**: every host
+   directory is mounted read-only, and `/out` and `/tmp` are size-capped tmpfs inside the
+   container. (Until M9.1 the report directory was a writable host bind mount, which was
+   unbounded; it also needed `0777` permissions.) The worker's umask must still let other
+   users read the extracted repository (the default `022` does).
+2. `docker run` starts the container **without `--rm`**. PID 1 is a small `sh` wrapper that runs
+   `python -P -m pytest ...`, keeps its exit status, kills every other process in the container,
+   prints `/out/report.json` between two markers carrying a random per-run nonce, and exits with
+   pytest's status.
+3. The worker enforces the wall-clock timeout and reads the container's stdout/stderr through
+   **bounded buffers** (first 192 KB and last 512 KB per stream, nothing more in memory). A run
+   that prints more than 64 MB is stopped and reported as a resource limit. Docker's own log
+   file is capped at 1 MB. Killing the docker CLI does not stop a container, so the runner also
+   runs `docker kill`.
+4. The runner reads the container's state from Docker (`docker inspect`): exit code, `OOMKilled`,
    and whether it ever started. A container that never started is a runner failure carrying
    Docker's own error message.
-4. The container is removed (`docker rm --force --volumes`) in a `finally` block on every path.
-5. Captured output is truncated to 256 KB per stream.
+5. The container is removed (`docker rm --force --volumes`) in a `finally` block on every path.
+6. The report block is removed from the output shown to users; stored output is truncated to
+   256 KB per stream.
+
+### Python path
+
+Repository roots are **not** on `PYTHONPATH`, which precedes the standard library: a repository
+file named `types.py` or `re.py` would otherwise replace the module pytest itself imports. The
+collector plugin appends the roots to `sys.path` after the stdlib and site-packages, and
+`python -P` keeps the working directory off the path.
 
 ### The test report is untrusted
 
 The report is written by a pytest plugin in the same process as the code under test, which can
-rewrite it. The runner reads it as untrusted input (strict schema, 1 MB limit, symlinks refused)
-and cross-checks it against the exit code and OOM flag from step 3. A contradiction, or a
-missing or malformed report, makes the attempt `INCONCLUSIVE` / `invalid_report`. This catches
-corruption and naive tampering; it cannot stop code that also controls its own exit status
-(see `docs/threat-model.md`, row 9a).
+rewrite it. It travels to the host as text between the nonce markers (the last block carrying
+the nonce wins), is parsed with a strict schema and a 256 KB limit, and is cross-checked against
+the exit code and OOM flag from step 4. A contradiction, or a missing or malformed report, makes
+the attempt `INCONCLUSIVE` / `invalid_report`. This catches corruption and tampering that
+contradicts the real exit status. It does **not** stop a repository from rewriting the report to
+agree with the exit status the run really had (for example "failed in target code" after a
+genuine unrelated failure, exit 1): see `docs/threat-model.md`, row 9a and residual risk 3a.
+The wrapper killing other processes before it prints stops a left-over child from printing a
+forged block after the real one; that step is untested against a real container.
 
 ### Verification status
 
@@ -52,9 +72,14 @@ cd backend
 REDFIRST_REQUIRE_DOCKER=1 uv run python -m pytest -m docker -rA
 ```
 
-They cover a passing and a failing test (including repository-relative frame mapping), an
-infinite loop, an OOM kill, a network connection attempt, a write to the read-only repo, a fork
-bomb, 5 MB of output, a repository that rewrites the report, and container cleanup after each.
+The 17 tests each assert their property from inside the container, so that they fail if it
+regresses: a passing and a failing test (with repository-relative frames), stdlib-named
+repository files, an infinite loop, an OOM kill, the process limit, the size-capped report
+area, network isolation (interface list, connect, DNS), the read-only repository (the test
+tree is world-writable so only the mount can stop a write), the read-only root and noexec
+tmpfs, non-root user with no capabilities, no worker secrets or Docker socket, 5 MB of
+output, an output flood, a rewritten report, a left-over process printing a forged block
+after the real one, and a report symlinked to a container file. **None has ever run.**
 
 `.github/workflows/sandbox.yml` runs the same tests on GitHub's Linux runners with
 `REDFIRST_REQUIRE_DOCKER=1` (so a missing Docker fails the job instead of skipping), lists every

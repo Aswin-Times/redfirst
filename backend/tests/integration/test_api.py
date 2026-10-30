@@ -178,3 +178,39 @@ def test_investigation_list_default_limit_is_unchanged(ctx):
     client, _, _ = ctx
     r = client.get("/api/investigations")
     assert r.status_code == 200 and r.json() == []
+
+
+# --- M9.1 R6: unknown Host headers are refused (DNS-rebinding hygiene) --------------------------
+@pytest.fixture
+def strict_client(tmp_path):
+    settings = Settings(data_dir=tmp_path / "data", allowed_hosts=["localhost", "127.0.0.1"])
+    engine = make_engine(f"sqlite:///{tmp_path / 'host.db'}")
+    Base.metadata.create_all(engine)
+    return TestClient(create_app(settings, engine), base_url="http://localhost")
+
+
+@pytest.mark.parametrize("host", ["attacker.example", "localhost.attacker.example",
+                                  "127.0.0.1.attacker.example", "evil.com:8000", ""])
+def test_unknown_host_header_is_rejected(strict_client, host):
+    for path in ("/api/projects", "/health", "/api/investigations"):
+        r = strict_client.get(path, headers={"Host": host})
+        assert r.status_code == 400, (host, path, r.status_code)
+
+
+@pytest.mark.parametrize("host", ["localhost", "localhost:3000", "127.0.0.1", "127.0.0.1:8000"])
+def test_localhost_hosts_are_accepted_with_or_without_a_port(strict_client, host):
+    assert strict_client.get("/api/projects", headers={"Host": host}).status_code == 200
+
+
+def test_allowed_hosts_can_be_extended_by_configuration(tmp_path):
+    settings = Settings(data_dir=tmp_path / "d", allowed_hosts=["redfirst.internal"])
+    engine = make_engine(f"sqlite:///{tmp_path / 'h2.db'}")
+    Base.metadata.create_all(engine)
+    c = TestClient(create_app(settings, engine), base_url="http://redfirst.internal")
+    assert c.get("/health").status_code == 200
+    assert c.get("/health", headers={"Host": "localhost"}).status_code == 400
+
+
+def test_default_allowed_hosts_are_loopback_only(monkeypatch):
+    monkeypatch.delenv("REDFIRST_ALLOWED_HOSTS")
+    assert Settings().allowed_hosts == ["localhost", "127.0.0.1"]

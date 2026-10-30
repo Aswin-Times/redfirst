@@ -269,3 +269,19 @@ def test_tampered_report_fails_closed_without_repeat_or_regeneration(make_env, t
     assert len(report.attempts) == 1 and len(report.attempts[0].executions) == 1
     assert any("implies exit code 0" in e for e in report.evidence)
     assert report.attempts[0].executions[0].exit_code == 1  # the real outcome is recorded
+
+
+FAKE_BUG_ON_CORRECT_CODE = gen(
+    "from calc import add\n\n"
+    "def test_control():\n    assert add(1, 1) == 2\n\n"
+    "def test_reproduces_bug():\n    add(2, 2)\n    assert False\n",
+    ["calc.py"], "AssertionError")
+
+
+def test_unconditional_assertion_cannot_force_reproduced_on_correct_code(make_env, tmp_path):
+    """M9.1 R1: `add(2, 2); assert False` used to give REPRODUCED for a bug-free repository."""
+    env = make_env([FAKE_BUG_ON_CORRECT_CODE, FAKE_BUG_ON_CORRECT_CODE])
+    report = run(env, "no_bug", tmp_path)
+    assert report.outcome == "INCONCLUSIVE" and report.outcome_reason == "generation_exhausted"
+    assert all(not a.executions for a in report.attempts)  # rejected before it could run
+    assert any("assert" in e.lower() for a in report.attempts for e in a.validation_errors)

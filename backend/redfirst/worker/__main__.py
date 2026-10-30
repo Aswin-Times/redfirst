@@ -21,7 +21,7 @@ from redfirst.worker.lease import LeaseKeeper
 from redfirst.worker.orchestrator import Deps, Orchestrator
 from redfirst.worker.queue import claim_next, default_worker_id, recover_lost
 
-PROMPT = ("generate_test", "v2")  # v2 states the stricter validator rules added in M9
+PROMPT = ("generate_test", "v3")  # v3 states the assertion and bypass rules added in M9.1
 
 log = logging.getLogger("redfirst.worker")
 

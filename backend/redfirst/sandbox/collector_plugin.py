@@ -9,6 +9,7 @@ process; the runner treats the report as untrusted (see redfirst/sandbox/results
 
 import json
 import os
+import sys
 
 import pytest
 
@@ -34,6 +35,17 @@ def _text(value) -> str:
         return str(value)[:MAX_MESSAGE]
     except Exception:  # an exception whose __str__ fails must not break reporting
         return "<unprintable exception>"
+
+
+def pytest_configure(config):
+    """Make the repository importable without letting it shadow the standard library.
+
+    Roots are appended to sys.path, so stdlib and site-packages modules always win over
+    repository files with the same name (types.py, re.py, ...).
+    """
+    for root in filter(None, os.environ.get("REDFIRST_SOURCE_ROOTS", "").split(os.pathsep)):
+        if root not in sys.path:
+            sys.path.append(root)
 
 
 @pytest.hookimpl(wrapper=True)

@@ -21,12 +21,15 @@ from redfirst.sandbox.results import CONTROL_TEST, MAIN_TEST
 MAX_LINES = 300
 MAX_BYTES = 20_000
 
+# "unittest" is deliberately absent: unittest.mock's public objects expose the real objects
+# being patched (patcher.temp_original, patcher.target), and reproduction tests assert with
+# plain `assert`. pytest's monkeypatch fixture covers patching.
 ALLOWED_LIBRARIES = frozenset({
     "pytest", "re", "json", "math", "decimal", "fractions", "datetime", "collections",
     "itertools", "functools", "dataclasses", "typing", "enum", "string", "copy", "uuid",
-    "textwrap", "contextlib", "unittest", "operator", "statistics", "random", "io",
+    "textwrap", "contextlib", "operator", "statistics", "random", "io",
 })
-ALLOWED_SUBMODULES = frozenset({"unittest.mock", "collections.abc"})
+ALLOWED_SUBMODULES = frozenset({"collections.abc"})
 # Names that are rejected wherever they appear (calls, references, assignments).
 FORBIDDEN_NAMES = frozenset({
     "eval", "exec", "compile", "__import__", "open", "breakpoint", "input",
@@ -40,7 +43,14 @@ GADGET_ATTRS = frozenset({
     "importorskip", "get_original", "getter", "pluginmanager", "import_plugin",
     "tb_frame", "f_globals", "f_locals", "f_builtins", "f_back", "f_code",
     "gi_frame", "gi_code", "cr_frame", "cr_code", "ag_frame", "co_code", "func_globals",
+    # pytest hook machinery reaches registered plugins (REDFIRST's collector and its `os`)
+    "get_hookimpls", "plugin_name", "temp_original",
+    # string.Formatter resolves dotted attribute strings, including dunders, to real objects
+    "get_field", "get_value", "vformat", "format_field",
 })
+# Fixture parameters that hand a test pytest's internals (config, hooks, plugin manager).
+FORBIDDEN_PARAMS = frozenset({"request", "pytestconfig", "cache", "doctest_namespace",
+                              "pytester", "testdir"})
 # Public library API that a reproduction test never needs and that can import modules, write
 # files, evaluate strings or end the process.
 LIBRARY_DENY: dict[str, frozenset[str]] = {
@@ -49,8 +59,9 @@ LIBRARY_DENY: dict[str, frozenset[str]] = {
     "io": frozenset({"open", "open_code", "FileIO"}),
     "operator": frozenset({"attrgetter", "methodcaller"}),
     "typing": frozenset({"get_type_hints", "ForwardRef", "evaluate_forward_ref"}),
+    "string": frozenset({"Formatter"}),
 }
-DENY_PATHS = frozenset({"unittest.mock.patch.dict"})  # exposes real dicts such as sys.modules
+DENY_PATHS: frozenset[str] = frozenset()  # dotted paths denied even when reached via a binding
 # pytest is a test-time dependency of the sandbox image, not of the worker, so its permitted
 # API is listed explicitly instead of being introspected.
 _PYTEST_API = frozenset({
@@ -84,6 +95,9 @@ class ValidationResult(BaseModel):
     warnings: list[str] = Field(default_factory=list)
     exercises_target: bool = False
     has_control_test: bool = False
+    # True only if test_reproduces_bug contains assertions and every one depends on the result
+    # of target code. A failing assertion is then evidence about the target, not about the test.
+    asserts_on_target_result: bool = False
 
 
 def module_map(index: RepoIndex, source_roots: list[str]) -> dict[str, str]:
@@ -146,6 +160,94 @@ def _library_chain_problem(origin: str, is_module: bool, attrs: list[str]) -> st
     return None
 
 
+def _refs_target(node: ast.AST, names: set[str], target_names: set[str]) -> bool:
+    """Whether the expression/statement mentions target code or a name derived from it."""
+    for n in ast.walk(node):
+        if isinstance(n, ast.Name) and n.id in names:
+            return True
+        if isinstance(n, ast.Attribute):
+            dotted = _dotted(n)
+            if dotted and any(dotted == t or dotted.startswith(t + ".") for t in target_names):
+                return True
+    return False
+
+
+def _stored_names(target: ast.AST) -> set[str]:
+    return {n.id for n in ast.walk(target) if isinstance(n, ast.Name)}
+
+
+def _tainted_names(main: ast.AST, refs) -> set[str]:
+    """Names assigned (directly or transitively) from expressions that mention target code."""
+    tainted: set[str] = set()
+    changed = True
+    while changed:
+        changed = False
+        for n in ast.walk(main):
+            bindings: list[tuple[set[str], bool]] = []  # (names stored, derived from target)
+            if isinstance(n, ast.Assign):
+                bindings.append((set().union(*map(_stored_names, n.targets)),
+                                 refs(n.value, tainted)))
+            elif isinstance(n, (ast.AnnAssign, ast.AugAssign, ast.NamedExpr)) \
+                    and getattr(n, "value", None) is not None:
+                bindings.append((_stored_names(n.target), refs(n.value, tainted)))
+            elif isinstance(n, (ast.For, ast.AsyncFor)):
+                bindings.append((_stored_names(n.target), refs(n.iter, tainted)))
+            elif isinstance(n, ast.comprehension):
+                bindings.append((_stored_names(n.target), refs(n.iter, tainted)))
+            elif isinstance(n, (ast.With, ast.AsyncWith)):
+                body_uses_target = any(refs(stmt, tainted) for stmt in n.body)
+                for item in n.items:
+                    if item.optional_vars is not None:
+                        bindings.append((_stored_names(item.optional_vars),
+                                         body_uses_target or refs(item.context_expr, tainted)))
+            for names, derived in bindings:
+                if derived and not names <= tainted:
+                    tainted |= names
+                    changed = True
+    return tainted
+
+
+def _is_assertion_error(exc: ast.AST | None) -> bool:
+    if isinstance(exc, ast.Call):
+        exc = exc.func
+    return isinstance(exc, ast.Name) and exc.id == "AssertionError"
+
+
+def _has_constant_falsy_operand(test: ast.AST) -> bool:
+    """`x and False`, `False and x`: an assertion that can never pass whatever x is."""
+    for n in ast.walk(test):
+        if isinstance(n, ast.BoolOp) and isinstance(n.op, ast.And):
+            for v in n.values:
+                if isinstance(v, ast.Constant) and not v.value:
+                    return True
+                if isinstance(v, ast.UnaryOp) and isinstance(v.op, ast.Not) \
+                        and isinstance(v.operand, ast.Constant) and v.operand.value:
+                    return True
+    return False
+
+
+def _assertion_problems(main: ast.AST, refs) -> tuple[list[str], bool]:
+    """Errors for assertions in test_reproduces_bug that say nothing about target code.
+
+    A failing `assert False` (or an assertion on a constant, or on values unrelated to target
+    results) is a property of the test, not of the repository, so it must never count as a
+    reproduction. Returns (errors, every assertion depends on a target result and at least
+    one exists).
+    """
+    tainted = _tainted_names(main, refs)
+    asserts = [n for n in ast.walk(main) if isinstance(n, ast.Assert)]
+    errors: list[str] = []
+    for a in asserts:
+        if not refs(a.test, tainted) or _has_constant_falsy_operand(a.test):
+            errors.append(f"assert on line {a.lineno} in {MAIN_TEST}() does not depend on the "
+                          "result of target code; it would fail whatever the code does")
+    for n in ast.walk(main):
+        if isinstance(n, ast.Raise) and _is_assertion_error(n.exc):
+            errors.append(f"raise AssertionError on line {n.lineno} in {MAIN_TEST}() fails "
+                          "unconditionally; assert on a value returned by target code instead")
+    return errors, bool(asserts) and not errors
+
+
 def _policy_problems(tree: ast.AST, repo_tops: set[str]) -> list[str]:
     """Imports, names and attribute access that the policy rejects (hygiene, not security)."""
     errors: list[str] = []
@@ -196,6 +298,10 @@ def _policy_problems(tree: ast.AST, repo_tops: set[str]) -> list[str]:
                 if not (isinstance(parent, ast.Attribute) and parent.value is node):
                     errors.append(f"library module '{node.id}' may only be used as "
                                   f"{node.id}.<name> (line {line})")
+        elif isinstance(node, ast.arg):
+            if node.arg in FORBIDDEN_PARAMS:
+                errors.append(f"parameter '{node.arg}' is not allowed: it exposes pytest "
+                              f"internals (line {line})")
         elif isinstance(node, ast.Attribute):
             root, attrs = _chain(node)
             if node.attr.startswith("__") and node.attr not in ALLOWED_DUNDERS:
@@ -288,5 +394,16 @@ def validate_test(
     if main is not None and not exercises and not unknown_targets:
         errors.append(f"{MAIN_TEST}() never references code imported from the target modules")
 
+    # --- do the assertions say something about the target? --------------------------------------
+    asserts_on_target = False
+    if main is not None and exercises:
+        helpers = {f.name for f in funcs
+                   if f is not main and references_target(f, {f.name})}
+        problems, asserts_on_target = _assertion_problems(
+            main, lambda n, tainted: _refs_target(n, bound_from_target | helpers | tainted,
+                                                  target_names))
+        errors.extend(problems)
+
     return ValidationResult(ok=not errors, errors=errors, warnings=warnings,
-                            exercises_target=exercises, has_control_test=has_control)
+                            exercises_target=exercises, has_control_test=has_control,
+                            asserts_on_target_result=asserts_on_target and not errors)

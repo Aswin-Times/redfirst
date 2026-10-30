@@ -21,6 +21,9 @@ class TestContract(BaseModel):
     expected_signature: FailureSignature
     has_control_test: bool = False
     exercises_target: bool = False  # set by the validator (AST), not by the model
+    # Set by the validator: every assertion in test_reproduces_bug depends on a target result,
+    # so an AssertionError raised by it is evidence about the target (wrong-value bugs).
+    asserts_on_target_result: bool = False
     expected_behavior_known: bool = True  # False if the report gave no checkable expectation
 
 
@@ -47,6 +50,7 @@ class RunResult(BaseModel):
     exit_code: int | None = None  # observed by the runner, not taken from the report
     timed_out: bool = False
     oom_killed: bool = False
+    output_flooded: bool = False  # the run printed more than the runner's hard output cap
     collection_error: bool = False
     main_status: TestStatus = TestStatus.MISSING
     main_phase: TestPhase | None = None

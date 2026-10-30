@@ -176,9 +176,6 @@ def test_known_bypasses_are_rejected(snippet):
     "import pytest\nassert 0.1 + 0.2 == pytest.approx(0.3)\n",
     "import io\nbuf = io.StringIO('a,b')\n",
     "from io import BytesIO\nbuf = BytesIO(b'x')\n",
-    "from unittest import mock\n\ndef helper():\n    with mock.patch('app.users.register') as m:\n"
-    "        m.return_value = 1\n",
-    "import unittest.mock\nm = unittest.mock.MagicMock()\n",
     "def helper(monkeypatch):\n    monkeypatch.setattr('app.users.register', lambda d: d)\n",
     "from decimal import Decimal\nassert isinstance(Decimal('1.1'), Decimal)\n",
     "import datetime\nwhen = datetime.datetime(2024, 1, 1, tzinfo=datetime.timezone.utc)\n",
@@ -198,3 +195,83 @@ def test_rejection_messages_explain_the_rule():
     assert any("importorskip" in e for e in r.errors)
     r = v(IMPORTS + "import io\nio.open('x', 'w')\n" + CALL_TARGET)
     assert any("io.open" in e for e in r.errors)
+
+
+# --- M9.1 R4: bypasses found in the M9 review (all of these ran in a real pytest process) --------
+@pytest.mark.parametrize("snippet", [
+    # string.Formatter.get_field walks dunder attribute chains without a dunder in the AST
+    "import string\nsubs = string.Formatter().get_field('0.__class__.__base__', (0,), {})\n",
+    "import string\nF = string.Formatter\n",
+    "from string import Formatter\n",
+    # unittest.mock internals expose the real objects being patched
+    "from unittest import mock\n\ndef helper():\n    p = mock.patch('os.getcwd')\n    p.start()\n"
+    "    return p.temp_original\n",
+    "from unittest import mock\n\ndef helper():\n    p = mock.patch('os.getcwd')\n    p.start()\n"
+    "    return p.target\n",
+    "import unittest\n",
+    "import unittest.mock\n",
+    "from unittest.mock import patch\n",
+    # reaching the collector plugin (and its `os` module) through pytest's hook machinery
+    "def helper(request):\n    return request.config.hook.pytest_collectreport.get_hookimpls()\n",
+    "def helper(pytestconfig):\n    return pytestconfig\n",
+    "def helper(cache):\n    return cache\n",
+    "helper = lambda request: request\n",
+    "def helper(items):\n    return [i.plugin_name for i in items]\n",
+])
+def test_m9_review_bypasses_are_rejected(snippet):
+    r = v(IMPORTS + snippet + CALL_TARGET)
+    assert not r.ok, f"accepted: {snippet!r}"
+
+
+def test_fixtures_that_do_not_expose_pytest_internals_are_still_allowed():
+    fixture = ("import pytest\n\n@pytest.fixture\n"
+               "def payload(tmp_path, monkeypatch, capsys):\n    return {}\n")
+    code = IMPORTS + fixture + CALL_TARGET
+    assert v(code).ok
+
+
+# --- M9.1 R1: an assertion in test_reproduces_bug must depend on target code's result ----------
+def reproduces(body: str, extra: str = "") -> str:
+    return IMPORTS + extra + "\ndef test_reproduces_bug():\n" + body
+
+
+@pytest.mark.parametrize("body", [
+    "    register({'username': 'a'})\n    assert False\n",
+    "    register({'username': 'a'})\n    assert 1 == 2\n",
+    "    register({'username': 'a'})\n    assert not True\n",
+    "    register({'username': 'a'})\n    assert 0\n",
+    "    register({'username': 'a'})\n    assert 'x' == 'y'\n",
+    "    assert register({'username': 'a'}) and False\n",
+    "    assert False and register({'username': 'a'})\n",
+    "    register({'username': 'a'})\n    raise AssertionError('always')\n",
+    "    register({'username': 'a'})\n    raise AssertionError\n",
+    "    x = register({'username': 'a'})\n    y = 5\n    assert y == 6\n",  # y not from target
+    "    x = register({'username': 'a'})\n    assert x == 'a'\n    assert False\n",  # second assert
+])
+def test_assertions_that_ignore_the_target_result_are_rejected(body):
+    r = v(reproduces(body))
+    assert not r.ok and any("assert" in e.lower() for e in r.errors), r.errors
+
+
+@pytest.mark.parametrize("body", [
+    "    assert register({'username': 'a'}) == 'b'\n",
+    "    x = register({'username': 'a'})\n    assert x == 'b'\n",
+    # taint spreads through assignments
+    "    x = register({'username': 'a'})\n    y = x.upper()\n    assert y == 'B'\n",
+    "    x = register({'username': 'a'})\n    assert len(x) == 2 and x != 'a'\n",
+    "    for r in [register({'username': 'a'})]:\n        assert r == 'zzz'\n",
+    "    assert (n := register({'username': 'a'})) == 'zzz'\n",
+    "    with pytest.raises(KeyError) as e:\n        register({})\n"
+    "    assert 'username' not in str(e.value)\n",
+    "    register({})\n",  # no assertion at all: the failure is whatever target code raises
+])
+def test_assertions_that_use_the_target_result_are_accepted(body):
+    r = v(reproduces(body, "import pytest\n"))
+    assert r.ok, r.errors
+
+
+def test_assertion_flag_is_set_only_when_every_assertion_depends_on_target():
+    with_assert = v(reproduces("    assert register({'username': 'a'}) == 'b'\n"))
+    assert with_assert.ok and with_assert.asserts_on_target_result
+    no_assert = v(reproduces("    register({})\n"))
+    assert no_assert.ok and not no_assert.asserts_on_target_result  # nothing to rely on

@@ -8,11 +8,18 @@ Build the image first:  docker build -t redfirst-sandbox-python:3.12 sandbox-ima
 Run:                    REDFIRST_REQUIRE_DOCKER=1 python -m pytest -m docker -rA
 
 A passing run shows these specific abuses are contained by this configuration; it does not
-prove the container cannot be escaped.
+prove the container cannot be escaped. NOTE: as of M9.1 these tests have never been run (no
+Docker on the development machine); every assumption about container behaviour in them is
+unverified until the CI workflow passes.
+
+Each test is written so that it FAILS if the property it names regresses: the generated test
+code itself asserts the property from inside the container (so a missing restriction makes the
+test pass in the container, and the host-side assertion on the result then fails).
 """
 
 import os
 import subprocess
+import textwrap
 
 import pytest
 
@@ -51,16 +58,23 @@ def _require_docker():
 
 @pytest.fixture
 def repo(tmp_path):
+    """A repository the container's unprivileged user could WRITE to if the mount allowed it.
+
+    The tree is world-writable on purpose: otherwise a missing `:ro` would go unnoticed,
+    because the container's uid has no write permission on host files it does not own.
+    """
     r = tmp_path / "repo"
     (r / "app").mkdir(parents=True)
     (r / "app" / "__init__.py").write_text("")
     (r / "app" / "users.py").write_text('def register(d):\n    return d["username"]\n')
+    for path in [r, r / "app", *(r / "app").iterdir()]:
+        os.chmod(path, 0o777 if path.is_dir() else 0o666)
     return r
 
 
 def run(repo, tmp_path, code, **kw):
-    return run_test_in_sandbox(image=IMAGE, repo_dir=repo, test_code=code, plugin_dir=PLUGIN_DIR,
-                               work_dir=tmp_path / "work", **kw)
+    return run_test_in_sandbox(image=IMAGE, repo_dir=repo, test_code=textwrap.dedent(code),
+                               plugin_dir=PLUGIN_DIR, work_dir=tmp_path / "work", **kw)
 
 
 def container_gone(name: str) -> bool:
@@ -74,10 +88,21 @@ CONTRACT = TestContract(target_modules=["app/users.py"],
                         exercises_target=True)
 
 
+def assert_main_passed(out):
+    """The property assertions run inside the container; success means the property holds."""
+    assert out.result.integrity_errors == [], (out.result, out.stderr[-1500:])
+    assert out.result.main_status is TestStatus.PASSED, (out.result.exception_type,
+                                                         out.result.message, out.stdout[-1500:])
+    assert out.container_removed and container_gone(out.container_name)
+
+
+# -- ordinary runs ------------------------------------------------------------------------------
 def test_failing_test_reproduces_with_repository_frames(repo, tmp_path):
-    code = ("from app.users import register\n"
-            "def test_reproduces_bug():\n    register({})\n")
-    out = run(repo, tmp_path, code)
+    out = run(repo, tmp_path, """
+        from app.users import register
+        def test_reproduces_bug():
+            register({})
+        """)
     r = out.result
     assert out.exit_code == 1 and r.integrity_errors == [], (r, out.stderr[-2000:])
     assert r.main_status is TestStatus.FAILED and r.exception_type == "KeyError"
@@ -86,17 +111,37 @@ def test_failing_test_reproduces_with_repository_frames(repo, tmp_path):
     v = classify([r], CONTRACT)
     assert (v.outcome, v.reason) == (Outcome.REPRODUCED, OutcomeReason.MATCHING_FAILURE)
     assert out.container_removed and container_gone(out.container_name)
+    assert "REDFIRST-REPORT" not in out.stdout  # the report block is not shown as output
 
 
 def test_passing_test_is_not_reproduced_and_cleans_up(repo, tmp_path):
-    code = ("from app.users import register\n"
-            "def test_reproduces_bug():\n    assert register({'username': 'a'}) == 'a'\n")
-    out = run(repo, tmp_path, code)
+    out = run(repo, tmp_path, """
+        from app.users import register
+        def test_reproduces_bug():
+            assert register({'username': 'a'}) == 'a'
+        """)
     assert out.exit_code == 0 and out.result.integrity_errors == [], out.stderr[-2000:]
     assert classify([out.result], CONTRACT).outcome is Outcome.NOT_REPRODUCED
     assert out.container_removed and container_gone(out.container_name)
 
 
+def test_repository_files_named_like_stdlib_modules_do_not_break_the_run(repo, tmp_path):
+    (repo / "types.py").write_text("SHADOW = True\n")
+    (repo / "re.py").write_text("SHADOW = True\n")
+    os.chmod(repo / "types.py", 0o666)
+    os.chmod(repo / "re.py", 0o666)
+    out = run(repo, tmp_path, """
+        import types, re
+        from app.users import register
+        def test_reproduces_bug():
+            assert hasattr(types, 'ModuleType') and hasattr(re, 'compile')
+            register({})
+        """)
+    assert out.result.integrity_errors == [], (out.result, out.stderr[-1500:])
+    assert out.result.exception_type == "KeyError"
+
+
+# -- resource limits ----------------------------------------------------------------------------
 def test_infinite_loop_times_out_and_the_container_is_removed(repo, tmp_path):
     out = run(repo, tmp_path, "def test_reproduces_bug():\n    while True:\n        pass\n",
               timeout_seconds=5)
@@ -106,63 +151,231 @@ def test_infinite_loop_times_out_and_the_container_is_removed(repo, tmp_path):
 
 
 def test_memory_exhaustion_is_reported_as_an_oom_kill(repo, tmp_path):
-    code = ("def test_reproduces_bug():\n"
-            "    chunks = []\n"
-            "    while True:\n"
-            "        chunks.append(b'x' * (64 * 1024 * 1024))\n")
-    out = run(repo, tmp_path, code, memory="256m")
+    out = run(repo, tmp_path, """
+        def test_reproduces_bug():
+            chunks = []
+            while True:
+                chunks.append(b'x' * (64 * 1024 * 1024))
+        """, memory="256m")
     assert out.result.oom_killed, (out.exit_code, out.stderr[-2000:])
     assert classify([out.result], CONTRACT).reason is OutcomeReason.RESOURCE_LIMIT
     assert out.container_removed and container_gone(out.container_name)
 
 
+def test_process_limit_stops_a_fork_bomb_quickly(repo, tmp_path):
+    """Fails if --pids-limit is removed: fork() would keep succeeding until memory runs out."""
+    out = run(repo, tmp_path, """
+        import os, time
+        def test_reproduces_bug():
+            pids, error = [], None
+            try:
+                for _ in range(1000):
+                    pid = os.fork()
+                    if pid == 0:
+                        time.sleep(60)
+                        os._exit(0)
+                    pids.append(pid)
+            except OSError as exc:
+                error = exc
+            for pid in pids:
+                os.kill(pid, 9)
+            assert error is not None, 'fork never failed'
+            assert len(pids) <= 128, f'{len(pids)} processes were allowed'
+        """, timeout_seconds=30)
+    assert_main_passed(out)
+
+
+def test_report_area_is_a_small_tmpfs(repo, tmp_path):
+    """Fails if /out becomes a host mount or loses its size limit."""
+    out = run(repo, tmp_path, """
+        import errno
+        def test_reproduces_bug():
+            mounts = open('/proc/mounts').read().splitlines()
+            line = next(m for m in mounts if m.split()[1] == '/out')
+            assert line.split()[0] == 'tmpfs' and 'noexec' in line, line
+            total, failure = 0, None
+            try:
+                for i in range(8):
+                    with open(f'/out/junk{i}', 'wb') as fh:
+                        fh.write(b'x' * (1024 * 1024))
+                    total += 1024 * 1024
+            except OSError as exc:
+                failure = exc
+            assert failure is not None and failure.errno == errno.ENOSPC, failure
+            assert total <= 2 * 1024 * 1024, total
+        """)
+    assert_main_passed(out)
+
+
+# -- isolation ----------------------------------------------------------------------------------
 def test_network_is_blocked(repo, tmp_path):
-    code = ("import socket\n"
-            "def test_reproduces_bug():\n"
-            "    socket.create_connection(('1.1.1.1', 53), timeout=3)\n")
-    out = run(repo, tmp_path, code)
-    assert out.result.main_status is TestStatus.FAILED
-    assert out.result.exception_type in {"OSError", "TimeoutError", "ConnectionRefusedError",
-                                         "gaierror"}, out.result
+    """Fails if --network none is removed: the connection or the interface list would differ."""
+    out = run(repo, tmp_path, """
+        import os, socket
+        def test_reproduces_bug():
+            assert sorted(os.listdir('/sys/class/net')) == ['lo']
+            failed = False
+            try:
+                socket.create_connection(('1.1.1.1', 53), timeout=3)
+            except OSError:
+                failed = True
+            assert failed, 'outbound connection succeeded'
+            try:
+                socket.getaddrinfo('example.com', 80)
+            except OSError:
+                return
+            raise AssertionError('DNS resolution worked')
+        """)
+    assert_main_passed(out)
 
 
-def test_repo_is_read_only(repo, tmp_path):
-    code = "def test_reproduces_bug():\n    open('/repo/x.txt', 'w').write('x')\n"
-    out = run(repo, tmp_path, code)
-    assert out.result.main_status is TestStatus.FAILED
+def test_repository_mount_is_read_only(repo, tmp_path):
+    """Fails if `:ro` is removed: the repository tree is world-writable (see the fixture)."""
+    out = run(repo, tmp_path, """
+        import errno
+        def test_reproduces_bug():
+            try:
+                open('/repo/x.txt', 'w').write('x')
+            except OSError as exc:
+                assert exc.errno == errno.EROFS, exc
+                return
+            raise AssertionError('wrote into /repo')
+        """)
+    assert_main_passed(out)
     assert not (repo / "x.txt").exists()
 
 
-def test_fork_bomb_is_contained(repo, tmp_path):
-    code = ("import os\n"
-            "def test_reproduces_bug():\n"
-            "    for _ in range(100000):\n        os.fork()\n")
-    out = run(repo, tmp_path, code, timeout_seconds=20)
-    assert out.result.timed_out or out.exit_code is not None
+def test_root_filesystem_is_read_only_and_tmp_is_noexec(repo, tmp_path):
+    out = run(repo, tmp_path, """
+        import errno
+        def test_reproduces_bug():
+            for path in ('/etc/redfirst', '/usr/redfirst', '/redfirst'):
+                try:
+                    open(path, 'w').write('x')
+                except OSError as exc:
+                    assert exc.errno in (errno.EROFS, errno.EACCES), (path, exc)
+                else:
+                    raise AssertionError(f'wrote {path}')
+            mounts = {m.split()[1]: m for m in open('/proc/mounts').read().splitlines()}
+            assert 'noexec' in mounts['/tmp'] and 'nosuid' in mounts['/tmp']
+        """)
+    assert_main_passed(out)
+
+
+def test_process_is_unprivileged_with_no_capabilities(repo, tmp_path):
+    out = run(repo, tmp_path, """
+        import os
+        def test_reproduces_bug():
+            assert (os.getuid(), os.getgid()) == (10001, 10001)
+            status = dict(line.split(':\\t', 1) for line in open('/proc/self/status')
+                          if ':\\t' in line)
+            for field in ('CapEff', 'CapPrm', 'CapBnd'):
+                assert int(status[field].strip(), 16) == 0, (field, status[field])
+            assert status['NoNewPrivs'].strip() == '1'
+        """)
+    assert_main_passed(out)
+
+
+def test_worker_secrets_and_the_docker_socket_are_not_visible(repo, tmp_path, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sentinel-not-a-real-key")
+    monkeypatch.setenv("REDFIRST_LLM_API_KEY", "sentinel-not-a-real-key")
+    out = run(repo, tmp_path, """
+        import os
+        def test_reproduces_bug():
+            for name, value in os.environ.items():
+                assert 'sentinel-not-a-real-key' not in value, name
+            words = ('TOKEN', 'SECRET', 'PASSWORD', 'API_KEY')
+            suspicious = [n for n in os.environ if any(w in n.upper() for w in words)]
+            assert suspicious == [], suspicious
+            assert not os.path.exists('/var/run/docker.sock')
+            assert not os.path.exists('/run/docker.sock')
+        """)
+    assert_main_passed(out)
+
+
+# -- output handling ----------------------------------------------------------------------------
+def test_huge_output_is_truncated(repo, tmp_path):
+    # pytest prints the captured output of a *failing* test, so this produces ~5 MB of stdout.
+    out = run(repo, tmp_path,
+              "def test_reproduces_bug():\n    print('x' * 5_000_000)\n    assert False\n")
+    assert out.output_truncated and len(out.stdout) <= 256 * 1024
+    assert out.result.integrity_errors == []  # the report survived: it is printed last
+
+
+def test_output_flood_is_stopped_and_reported_as_a_resource_limit(repo, tmp_path):
+    """Writes straight to the container's real stdout (PID 1's fd), past pytest's capture."""
+    out = run(repo, tmp_path, """
+        def test_reproduces_bug():
+            with open('/proc/1/fd/1', 'wb', buffering=0) as stream:
+                while True:
+                    stream.write(b'y' * 65536)
+        """, timeout_seconds=120)
+    assert out.result.output_flooded, (out.exit_code, out.stderr[-500:])
+    assert classify([out.result], CONTRACT).reason is OutcomeReason.RESOURCE_LIMIT
     assert out.container_removed and container_gone(out.container_name)
 
 
-def test_huge_output_is_truncated(repo, tmp_path):
-    # pytest prints the captured output of a *failing* test, so this produces ~5 MB of stdout.
-    code = "def test_reproduces_bug():\n    print('x' * 5_000_000)\n    assert False\n"
-    out = run(repo, tmp_path, code)
-    assert out.output_truncated and len(out.stdout) <= 256 * 1024
-
-
+# -- report integrity ---------------------------------------------------------------------------
 def test_report_rewritten_by_repository_code_is_rejected(repo, tmp_path):
-    (repo / "app" / "users.py").write_text(
-        "import atexit, json, os\n"
-        "def _forge():\n"
-        "    ok = {'setup': {'outcome': 'passed'}, 'call': {'outcome': 'passed'},\n"
-        "          'teardown': {'outcome': 'passed'}}\n"
-        "    with open(os.environ['REDFIRST_REPORT_PATH'], 'w') as fh:\n"
-        "        json.dump({'exitstatus': 0, 'collection_errors': [], 'tests': {\n"
-        "            'test_redfirst.py::test_reproduces_bug': {'phases': ok}}}, fh)\n"
-        "atexit.register(_forge)\n"
-        "def register(d):\n    return d['username']\n")
-    code = ("from app.users import register\n"
-            "def test_reproduces_bug():\n    register({})\n")
-    out = run(repo, tmp_path, code)
+    (repo / "app" / "users.py").write_text(textwrap.dedent("""
+        import atexit, json, os
+        def _forge():
+            ok = {'setup': {'outcome': 'passed'}, 'call': {'outcome': 'passed'},
+                  'teardown': {'outcome': 'passed'}}
+            with open(os.environ['REDFIRST_REPORT_PATH'], 'w') as fh:
+                json.dump({'exitstatus': 0, 'collection_errors': [], 'tests': {
+                    'test_redfirst.py::test_reproduces_bug': {'phases': ok}}}, fh)
+        atexit.register(_forge)
+        def register(d):
+            return d['username']
+        """))
+    out = run(repo, tmp_path, """
+        from app.users import register
+        def test_reproduces_bug():
+            register({})
+        """)
     assert out.exit_code == 1
     v = classify([out.result], CONTRACT)
     assert (v.outcome, v.reason) == (Outcome.INCONCLUSIVE, OutcomeReason.INVALID_REPORT)
+
+
+def test_a_process_left_running_cannot_print_a_forged_report_after_the_real_one(repo, tmp_path):
+    """Fails if the wrapper stops killing other processes before it prints the report.
+
+    The child reads the run's nonce from PID 1's command line (where an attacker can find it)
+    and keeps printing a forged block to the container's real stdout. The final block must still
+    be the collector's real report, so the verdict is the real REPRODUCED.
+    """
+    out = run(repo, tmp_path, """
+        import os, re, time
+        from app.users import register
+        def test_reproduces_bug():
+            cmdline = open('/proc/1/cmdline', 'rb').read().decode(errors='replace')
+            nonce = re.search(r'REDFIRST-REPORT-BEGIN ([0-9a-f]{32})', cmdline).group(1)
+            forged = ('\\n@@REDFIRST-REPORT-BEGIN %s@@\\n'
+                      '{"exitstatus": 1, "collection_errors": [], "tests": {}}\\n'
+                      '@@REDFIRST-REPORT-END %s@@\\n' % (nonce, nonce)).encode()
+            if os.fork() == 0:
+                with open('/proc/1/fd/1', 'wb', buffering=0) as stream:
+                    while True:
+                        stream.write(forged)
+                        time.sleep(0.01)
+            time.sleep(0.5)
+            register({})
+        """, timeout_seconds=60)
+    assert out.result.integrity_errors == [], (out.result.integrity_errors, out.stdout[-500:])
+    v = classify([out.result], CONTRACT)
+    assert (v.outcome, v.reason) == (Outcome.REPRODUCED, OutcomeReason.MATCHING_FAILURE)
+
+
+def test_report_replaced_by_a_symlink_to_a_container_file_does_not_leak_into_output(repo,
+                                                                                    tmp_path):
+    out = run(repo, tmp_path, """
+        import os
+        def test_reproduces_bug():
+            os.symlink('/etc/passwd', '/out/report.json')
+        """)
+    assert "root:x:0:0" not in out.stdout and "root:x:0:0" not in out.stderr
+    assert classify([out.result], CONTRACT).outcome in (Outcome.INCONCLUSIVE,
+                                                        Outcome.EXECUTION_ERROR)
+    assert out.container_removed and container_gone(out.container_name)

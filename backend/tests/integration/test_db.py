@@ -153,3 +153,51 @@ def test_delete_removes_evidence_that_references_execution_results(engine):
         assert s.scalars(select(ExecutionResult)).all() == []
         assert s.scalars(select(Attempt)).all() == []
         assert s.get(Investigation, inv_id) is None
+
+
+# --- M9.1 R5: migrations must also work on a database that already holds data ------------------
+def _populate_at_0001(eng):
+    import datetime as dt
+
+    import sqlalchemy as sa
+
+    meta = sa.MetaData()
+    meta.reflect(eng)
+    now = dt.datetime.now(dt.UTC)
+    rows = [
+        ("projects", dict(id="p1", name="p", created_at=now)),
+        ("repositories", dict(id="r1", project_id="p1", source_type="archive", storage_ref="x",
+                              created_at=now)),
+        ("bug_reports", dict(id="b1", project_id="p1", title="t", description="",
+                             missing_fields=[], created_at=now)),
+        ("investigations", dict(id="i1", bug_report_id="b1", repository_id="r1",
+                                state="COMPLETED", created_at=now, updated_at=now)),
+        ("investigation_events", dict(investigation_id="i1", to_state="CREATED", message="m",
+                                      created_at=now)),
+        ("attempts", dict(id="a1", investigation_id="i1", number=1, status="valid",
+                          created_at=now)),
+    ]
+    with eng.begin() as conn:
+        for table, values in rows:
+            conn.execute(meta.tables[table].insert().values(**values))
+
+
+def test_migration_0002_upgrades_and_downgrades_a_populated_database(tmp_path):
+    import sqlalchemy as sa
+
+    eng = make_engine(f"sqlite:///{(tmp_path / 'populated.db').as_posix()}")  # foreign keys ON
+    cfg = Config("alembic.ini")
+    cfg.attributes["engine"] = eng
+    command.upgrade(cfg, "0001")
+    _populate_at_0001(eng)
+    counts = {}
+    for target, step in (("0002", command.upgrade), ("0001", command.downgrade),
+                         ("0002", command.upgrade)):
+        step(cfg, target)  # used to fail: DROP TABLE investigations violated child foreign keys
+        with eng.connect() as conn:
+            counts[target] = [conn.execute(sa.text(f"select count(*) from {t}")).scalar()
+                              for t in ("investigations", "investigation_events", "attempts")]
+            assert conn.execute(sa.text("PRAGMA foreign_keys")).scalar() == 1  # restored
+            assert conn.execute(sa.text("PRAGMA foreign_key_check")).fetchall() == []
+        assert counts[target] == [1, 1, 1]
+    eng.dispose()

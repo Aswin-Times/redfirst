@@ -1,21 +1,21 @@
-"""D9: container lifecycle of the Docker runner, against a FAKE Docker CLI.
+"""D9 + M9.1 R3: container lifecycle of the Docker runner, against a FAKE Docker CLI.
 
-These tests check the runner's control flow (create, wait, inspect, kill, remove) using a stand-in
-that implements the documented semantics of the docker CLI commands the runner uses, e.g. that
-``--rm`` deletes a container as soon as it exits. They do NOT verify Docker or isolation; that is
-tests/integration/test_sandbox_docker.py, run by .github/workflows/sandbox.yml.
+These tests check the runner's control flow (create, capture, inspect, kill, remove) using a
+stand-in that implements the documented semantics of the docker CLI commands the runner uses.
+They do NOT verify Docker or isolation; that is tests/integration/test_sandbox_docker.py, run by
+.github/workflows/sandbox.yml.
 """
 
 import json
-import os
+import re
 import subprocess
-import sys
 
 import pytest
 
 from redfirst.domain.enums import OutcomeReason as R
 from redfirst.sandbox import runner
 from redfirst.sandbox.executor import PLUGIN_DIR
+from redfirst.sandbox.results import REPORT_BEGIN, REPORT_END
 from redfirst.verification.models import FailureSignature, TestContract
 from redfirst.verification.rules import classify
 
@@ -29,16 +29,23 @@ GOOD_REPORT = {"exitstatus": 0, "collection_errors": [], "tests": {
     "test_redfirst.py::test_control": {"phases": PASSED}}}
 
 
+def report_block(report: dict, nonce: str) -> bytes:
+    return (f"\n{REPORT_BEGIN.format(nonce=nonce)}\n{json.dumps(report)}\n"
+            f"{REPORT_END.format(nonce=nonce)}\n").encode()
+
+
 class FakeDocker:
     """Implements the docker CLI subcommands the runner uses, with Docker's semantics."""
 
     def __init__(self, *, exit_code=0, oom=False, never_starts=False, hangs=False,
-                 report=None, inspect_fails=False):
+                 flood=False, report=None, inspect_fails=False, extra_stdout=b""):
         self.exit_code, self.oom = exit_code, oom
-        self.never_starts, self.hangs, self.report = never_starts, hangs, report
+        self.never_starts, self.hangs, self.flood, self.report = never_starts, hangs, flood, report
         self.inspect_fails = inspect_fails
+        self.extra_stdout = extra_stdout
         self.containers: dict[str, dict] = {}
         self.calls: list[list[str]] = []
+        self.run_args: list[str] = []
 
     @staticmethod
     def _done(args, code=0, out=b"", err=b"", text=False):
@@ -46,39 +53,37 @@ class FakeDocker:
             out, err = out.decode(), err.decode()
         return subprocess.CompletedProcess(args, code, out, err)
 
+    # The main `docker run`: the runner calls run_bounded for it.
+    def run_bounded(self, args, timeout, **_):
+        self.calls.append(list(args))
+        self.run_args = list(args)
+        name = args[args.index("--name") + 1]
+        nonce = re.search(r"REDFIRST-REPORT-BEGIN ([0-9a-f]{32})", " ".join(args)).group(1)
+        if self.never_starts:
+            return runner.Captured(125, b"", b"Unable to find image 'missing:tag'")
+        self.containers[name] = {"Status": "running", "Running": True, "OOMKilled": False,
+                                 "ExitCode": 0, "StartedAt": "2026-10-30T10:00:00Z"}
+        if self.hangs:
+            return runner.Captured(None, b"partial", b"", timed_out=True)
+        self.containers[name].update(Status="exited", Running=False, OOMKilled=self.oom,
+                                     ExitCode=self.exit_code)
+        if self.flood:
+            return runner.Captured(137, b"x" * 100, b"", flooded=True, truncated=True)
+        out = b"test output" + self.extra_stdout
+        if self.report is not None:
+            out += report_block(self.report, nonce)
+        return runner.Captured(self.exit_code, out, b"")
+
     def __call__(self, args, capture_output=True, timeout=None, check=False, text=False, **_):
         self.calls.append(list(args))
         cmd, rest = args[1], args[2:]
         if cmd == "info":
             return self._done(args, 0, text=text)
-        if cmd == "run":
-            name = rest[rest.index("--name") + 1]
-            if self.never_starts:
-                return self._done(args, 125, err=b"Unable to find image 'missing:tag'", text=text)
-            self.containers[name] = {"Status": "running", "Running": True, "OOMKilled": False,
-                                     "ExitCode": 0, "StartedAt": "2026-10-30T10:00:00Z"}
-            out_mount = next(v for v in rest if v.endswith(":/out:rw"))
-            out_dir = out_mount[: -len(":/out:rw")]
-            if self.report is not None:
-                with open(os.path.join(out_dir, "report.json"), "w") as fh:
-                    json.dump(self.report, fh)
-            if self.hangs:
-                raise subprocess.TimeoutExpired(args, timeout, output=b"partial", stderr=b"")
-            self.containers[name].update(Status="exited", Running=False, OOMKilled=self.oom,
-                                         ExitCode=self.exit_code)
-            if "--rm" in rest:  # Docker removes the container as soon as it exits
-                del self.containers[name]
-            return self._done(args, self.exit_code, out=b"test output", text=text)
         name = rest[-1]
         if cmd == "inspect":
             if self.inspect_fails or name not in self.containers:
                 return self._done(args, 1, err=b"Error: No such object", text=text)
-            state = self.containers[name]
-            if "{{json .State}}" in rest:
-                return self._done(args, 0, out=json.dumps(state).encode(), text=text)
-            if "{{.State.OOMKilled}}" in rest:
-                return self._done(args, 0, out=str(state["OOMKilled"]).lower().encode(),
-                                  text=text)
+            return self._done(args, 0, out=json.dumps(self.containers[name]).encode(), text=text)
         if cmd == "kill" and name in self.containers:
             self.containers[name].update(Status="exited", Running=False, ExitCode=137)
             return self._done(args, 0, text=text)
@@ -91,7 +96,7 @@ class FakeDocker:
         return self._done(args, 1, err=b"unsupported", text=text)
 
     def ran(self, cmd: str) -> bool:
-        return any(c[1] == cmd for c in self.calls)
+        return any(len(c) > 1 and c[1] == cmd for c in self.calls)
 
 
 @pytest.fixture
@@ -99,6 +104,7 @@ def fake(monkeypatch):
     def install(**kw) -> FakeDocker:
         docker = FakeDocker(**kw)
         monkeypatch.setattr(runner.subprocess, "run", docker)
+        monkeypatch.setattr(runner, "run_bounded", docker.run_bounded)
         monkeypatch.setattr(runner.shutil, "which", lambda _: "/usr/bin/docker")
         return docker
     return install
@@ -122,23 +128,46 @@ def test_oom_kill_is_read_from_the_container_before_it_is_removed(fake, tmp_path
 def test_run_does_not_ask_docker_to_auto_remove(fake, tmp_path):
     docker = fake(report=GOOD_REPORT)
     run(tmp_path)
-    run_args = next(c for c in docker.calls if c[1] == "run")
-    assert "--rm" not in run_args
+    assert "--rm" not in docker.run_args
 
 
-def test_successful_run_uses_the_runtime_exit_code_and_cleans_up(fake, tmp_path):
+def test_successful_run_reads_the_report_from_the_output_and_the_exit_code_from_docker(
+        fake, tmp_path):
     docker = fake(exit_code=0, report=GOOD_REPORT)
     out = run(tmp_path)
     assert out.exit_code == 0 and out.result.exit_code == 0
     assert out.result.integrity_errors == [] and not out.result.runner_crashed
+    assert "REDFIRST-REPORT" not in out.stdout and "test output" in out.stdout  # block stripped
     assert docker.containers == {} and out.container_removed
 
 
-def test_failing_run_cleans_up(fake, tmp_path):
+def test_report_block_with_the_wrong_nonce_is_not_used(fake, tmp_path):
+    fake(exit_code=0, report=None,
+         extra_stdout=report_block(GOOD_REPORT, "f" * 32))  # attacker guessed a nonce
+    out = run(tmp_path)
+    assert out.result.integrity_errors and "no report block" in out.result.integrity_errors[0]
+    assert classify([out.result], CONTRACT).reason is R.INVALID_REPORT
+
+
+def test_failing_run_without_a_report_is_untrusted_and_cleans_up(fake, tmp_path):
     docker = fake(exit_code=1, report=None)
     out = run(tmp_path)
-    assert out.result.integrity_errors  # no report although the process ran: untrusted
+    assert out.result.integrity_errors
     assert docker.containers == {}
+
+
+def test_nothing_is_created_on_the_host_for_the_container_to_write(fake, tmp_path):
+    fake(report=GOOD_REPORT)
+    run(tmp_path)
+    assert sorted(p.name for p in (tmp_path / "work").iterdir()) == ["gen"]
+
+
+def test_output_flood_stops_the_container_and_is_a_resource_limit(fake, tmp_path):
+    docker = fake(flood=True)
+    out = run(tmp_path)
+    assert out.result.output_flooded and out.output_truncated
+    assert docker.ran("kill") and docker.containers == {}
+    assert classify([out.result], CONTRACT).reason is R.RESOURCE_LIMIT
 
 
 def test_timeout_kills_inspects_and_removes_the_container(fake, tmp_path):
@@ -175,10 +204,25 @@ def test_docker_missing_raises_sandbox_unavailable(monkeypatch, tmp_path):
         run(tmp_path)
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX permissions only")
-def test_output_dir_is_writable_by_the_container_user_but_private_on_the_host(fake, tmp_path):
+def test_exception_while_running_still_removes_the_container(fake, tmp_path, monkeypatch):
+    docker = fake(report=GOOD_REPORT)
+
+    def boom(*a, **k):
+        docker.containers["x"] = {"Status": "running"}
+        raise RuntimeError("worker interrupted")
+
+    monkeypatch.setattr(runner, "run_bounded", boom)
+    with pytest.raises(RuntimeError):
+        run(tmp_path)
+    assert docker.ran("rm")
+
+
+@pytest.mark.skipif(__import__("sys").platform == "win32", reason="POSIX permissions only")
+def test_run_directory_is_private_and_the_test_directory_readable_by_the_container_user(
+        fake, tmp_path):
     fake(report=GOOD_REPORT)
     run(tmp_path)
     work = tmp_path / "work"
     assert (work.stat().st_mode & 0o777) == 0o700
-    assert (work / "out").stat().st_mode & 0o777 == 0o777
+    assert (work / "gen").stat().st_mode & 0o777 == 0o755
+    assert (work / "gen" / "test_redfirst.py").stat().st_mode & 0o777 == 0o644
