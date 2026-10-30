@@ -285,3 +285,19 @@ def test_unconditional_assertion_cannot_force_reproduced_on_correct_code(make_en
     assert report.outcome == "INCONCLUSIVE" and report.outcome_reason == "generation_exhausted"
     assert all(not a.executions for a in report.attempts)  # rejected before it could run
     assert any("assert" in e.lower() for a in report.attempts for e in a.validation_errors)
+
+
+ALWAYS_FALSE_ON_THE_RESULT = gen(
+    "from calc import add\n\n"
+    "def test_control():\n    assert add(1, 1) == 2\n\n"
+    "def test_reproduces_bug():\n    r = add(2, 2)\n    assert r != r\n",
+    ["calc.py"], "AssertionError")
+
+
+def test_always_false_assertion_on_the_result_cannot_force_reproduced(make_env, tmp_path):
+    """M9.2 H2: `r = add(2, 2); assert r != r` passed R1's check and gave REPRODUCED."""
+    env = make_env([ALWAYS_FALSE_ON_THE_RESULT])
+    report = run(env, "no_bug", tmp_path)
+    assert report.outcome != "REPRODUCED"
+    assert (report.outcome, report.outcome_reason) == ("INCONCLUSIVE", "unrelated_failure")
+    assert report.attempts[-1].executions  # it ran; the verdict, not the validator, refused it

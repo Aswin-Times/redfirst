@@ -107,6 +107,17 @@ def test_interpreter_runs_in_safe_path_mode_so_the_working_directory_is_not_on_s
 def test_wrapper_kills_every_other_process_before_printing_the_report():
     """A child left running by the tests must not be able to print a block after the real one."""
     script = args()[args().index("-c") + 1]
-    kill = script.index("os.kill(-1, signal.SIGKILL)")
+    kill = script.index("kill -9 -1")
     assert kill < script.index(REPORT_BEGIN.format(nonce=NONCE))
     assert script.index("status=$?") < kill  # pytest's exit status is captured first
+
+
+def test_wrapper_kill_needs_no_new_process():
+    """M9.2 M1: an external `python -c os.kill(...)` cannot start once the tests have used up
+    the process limit, and its failure was silenced, so stragglers survived to print after the
+    real report. The shell builtin needs no fork."""
+    script = args()[args().index("-c") + 1]
+    before_report = script[:script.index(REPORT_BEGIN.format(nonce=NONCE))]
+    after_pytest = before_report[before_report.index("status=$?"):]
+    assert "python" not in after_pytest and "os.kill" not in after_pytest
+    assert after_pytest.count("kill -9 -1") == 2

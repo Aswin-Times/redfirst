@@ -58,7 +58,11 @@ contradicts the real exit status. It does **not** stop a repository from rewriti
 agree with the exit status the run really had (for example "failed in target code" after a
 genuine unrelated failure, exit 1): see `docs/threat-model.md`, row 9a and residual risk 3a.
 The wrapper killing other processes before it prints stops a left-over child from printing a
-forged block after the real one; that step is untested against a real container.
+forged block after the real one. The nonce does **not** do this: any process in the container
+can read it from `/proc/1/cmdline`. The kill uses the shell's builtin `kill -9 -1` (sent twice),
+which needs no new process, so it still works when the tests have used up the process limit;
+until M9.2 it started `python` for this, and when that fork failed the error was silenced and
+the children survived. Both cases are covered by Docker tests that have not yet run.
 
 ### Verification status
 
@@ -72,7 +76,7 @@ cd backend
 REDFIRST_REQUIRE_DOCKER=1 uv run python -m pytest -m docker -rA
 ```
 
-The 17 tests each assert their property from inside the container, so that they fail if it
+The 18 tests each assert their property from inside the container, so that they fail if it
 regresses: a passing and a failing test (with repository-relative frames), stdlib-named
 repository files, an infinite loop, an OOM kill, the process limit, the size-capped report
 area, network isolation (interface list, connect, DNS), the read-only repository (the test

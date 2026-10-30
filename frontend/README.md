@@ -5,7 +5,7 @@ lucide icons. All data comes from the FastAPI backend; nothing on screen is inve
 
 ```bash
 pnpm install
-pnpm dev          # http://localhost:3000, proxies /api/* to REDFIRST_BACKEND_URL
+pnpm dev          # http://localhost:3000 (loopback only), proxies /api/* to REDFIRST_BACKEND_URL
 pnpm typecheck
 pnpm lint
 pnpm test         # Vitest + Testing Library
@@ -15,6 +15,10 @@ pnpm build
 `REDFIRST_BACKEND_URL` defaults to `http://127.0.0.1:8000`. Put overrides in `.env.local`
 (git-ignored). The backend address is only used by the server-side rewrite in
 `next.config.ts`; the browser only ever talks to this app.
+
+`dev` and `start` listen on `127.0.0.1` only. The backend has no authentication and this app
+proxies every `/api/*` request to it, so do not remove `--hostname 127.0.0.1` without adding
+authentication first.
 
 ## Structure
 

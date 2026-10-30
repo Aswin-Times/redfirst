@@ -15,12 +15,21 @@ CONTAINER_OUT = "/out"
 #   2. kills every other process, so nothing the tests started can print after this point,
 #   3. prints the report between this run's nonce markers (the host takes the last block),
 #   4. exits with pytest's status, which Docker then records as the container's exit code.
+# Step 2 uses the shell's builtin `kill`: it needs no new process, so it still works when the
+# tests have used up the container's process limit (an external `python -c os.kill(...)`
+# could not start then, and the kill was silently skipped). kill(-1) from PID 1 reaches every
+# process except PID 1 itself; all of them run as the same uid without capabilities, so none
+# can refuse it. It is sent twice in case a fork completed while the first was delivered. Its
+# status is ignored because it is non-zero when no other process was left (ESRCH). The nonce is
+# NOT secret (any process can read it from /proc/1/cmdline); only the kill makes the last
+# block the wrapper's own.
 # The report lives on a small tmpfs, so nothing is written to the host and nothing the
 # container writes can fill a host disk. Only constants and the nonce appear in the script;
 # the pytest command arrives as separate arguments ("$@").
+KILL_OTHERS = "kill -9 -1 2>/dev/null; kill -9 -1 2>/dev/null; "
 WRAPPER = (
     'status=0; "$@" || status=$?; '
-    'python -P -c "import os, signal; os.kill(-1, signal.SIGKILL)" 2>/dev/null; '
+    + KILL_OTHERS +
     "printf '\\n%s\\n' '" + REPORT_BEGIN + "'; "
     "cat /out/report.json 2>/dev/null; "
     "printf '\\n%s\\n' '" + REPORT_END + "'; "

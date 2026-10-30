@@ -368,6 +368,52 @@ def test_a_process_left_running_cannot_print_a_forged_report_after_the_real_one(
     assert (v.outcome, v.reason) == (Outcome.REPRODUCED, OutcomeReason.MATCHING_FAILURE)
 
 
+def test_stragglers_that_exhaust_the_process_limit_still_cannot_print_after_the_report(
+        repo, tmp_path):
+    """Fails if the wrapper's kill step needs a new process (M9.2, M1).
+
+    The tests fill the container's process limit with children that keep printing a forged
+    block. The wrapper used to start `python` to kill them; that fork failed, the error was
+    silenced, and the children outlived it. The forged report claims exit status 77, so any
+    integrity error mentioning 77 means a forged block was taken as the report.
+    """
+    out = run(repo, tmp_path, """
+        import os, re, time
+        from app.users import register
+        def test_reproduces_bug():
+            cmdline = open('/proc/1/cmdline', 'rb').read().decode(errors='replace')
+            nonce = re.search(r'REDFIRST-REPORT-BEGIN ([0-9a-f]{32})', cmdline).group(1)
+            forged = ('\\n@@REDFIRST-REPORT-BEGIN %s@@\\n'
+                      '{"exitstatus": 77, "collection_errors": [], "tests": {}}\\n'
+                      '@@REDFIRST-REPORT-END %s@@\\n' % (nonce, nonce)).encode()
+            children = 0
+            while True:
+                try:
+                    pid = os.fork()
+                except OSError:
+                    break  # the process limit is reached
+                if pid == 0:
+                    try:
+                        with open('/proc/1/fd/1', 'wb', buffering=0) as stream:
+                            while True:
+                                stream.write(forged)
+                                time.sleep(0.01)
+                    finally:
+                        os._exit(0)
+                children += 1
+            assert children > 50, children
+            time.sleep(0.5)
+            register({})
+        """, timeout_seconds=60)
+    assert not any("77" in e for e in out.result.integrity_errors), out.result.integrity_errors
+    v = classify([out.result], CONTRACT)
+    # Either the real report got through, or (if `cat` itself could not start) there is none;
+    # a forged report must never be accepted.
+    assert (v.outcome, v.reason) in {(Outcome.REPRODUCED, OutcomeReason.MATCHING_FAILURE),
+                                     (Outcome.INCONCLUSIVE, OutcomeReason.INVALID_REPORT)}, v
+    assert out.container_removed and container_gone(out.container_name)
+
+
 def test_report_replaced_by_a_symlink_to_a_container_file_does_not_leak_into_output(repo,
                                                                                     tmp_path):
     out = run(repo, tmp_path, """

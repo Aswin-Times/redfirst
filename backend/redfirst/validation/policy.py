@@ -248,6 +248,121 @@ def _assertion_problems(main: ast.AST, refs) -> tuple[list[str], bool]:
     return errors, bool(asserts) and not errors
 
 
+# Builtins that observe a value without inventing one; `len(r) == 2` is a direct check of r.
+_OBSERVERS = frozenset({"len", "str", "repr", "bool", "int", "float", "abs", "round", "sorted",
+                        "list", "tuple", "set", "frozenset", "dict", "type", "min", "max",
+                        "sum", "any", "all"})
+_SINGLETONS = (None, True, False)
+_COMPARE_OPS = (ast.Eq, ast.NotEq, ast.Lt, ast.LtE, ast.Gt, ast.GtE, ast.In, ast.NotIn)
+
+
+def _direct_names(main: ast.AST, is_source, depends) -> set[str]:
+    """Names bound directly to a target result (no arithmetic, displays or helpers in between)."""
+    direct: set[str] = set()
+    changed = True
+    while changed:
+        changed = False
+        for n in ast.walk(main):
+            bound: set[str] = set()
+            if isinstance(n, ast.Assign):
+                value, targets = n.value, n.targets
+            elif isinstance(n, (ast.AnnAssign, ast.NamedExpr)) and n.value is not None:
+                value, targets = n.value, [n.target]
+            elif isinstance(n, (ast.For, ast.AsyncFor)):
+                value, targets = n.iter, [n.target]
+            else:
+                continue
+            if _is_direct(value, direct, is_source, depends):
+                bound = set().union(*map(_stored_names, targets))
+            if not bound <= direct:
+                direct |= bound
+                changed = True
+    return direct
+
+
+def _is_direct(e: ast.AST, direct: set[str], is_source, depends) -> bool:
+    """An expression that is a target result, or a plain observation of one.
+
+    ``depends(node)`` says whether a node uses anything derived from target code; extra
+    arguments and subscripts must not, or `r[r.index(r)]`-style tricks would count.
+    """
+    def direct_(x: ast.AST) -> bool:
+        return _is_direct(x, direct, is_source, depends)
+
+    if isinstance(e, (ast.Await, ast.NamedExpr)):
+        return direct_(e.value)
+    if isinstance(e, ast.Name):
+        return e.id in direct or is_source(e)
+    if isinstance(e, ast.Attribute):
+        return is_source(e) or direct_(e.value)
+    if isinstance(e, ast.Subscript):
+        return direct_(e.value) and not depends(e.slice)
+    if isinstance(e, ast.Call):
+        args = [*e.args, *(k.value for k in e.keywords)]
+        if is_source(e.func):  # a call into target code; its arguments may be anything
+            return True
+        if isinstance(e.func, ast.Attribute) and direct_(e.func.value):
+            return not any(map(depends, args))  # r.method(...)
+        if isinstance(e.func, ast.Name) and e.func.id in _OBSERVERS and e.args:
+            return direct_(e.args[0]) and not any(map(depends, args[1:]))
+    return False
+
+
+def _is_unsatisfiable_operand(e: ast.AST) -> bool:
+    """A comparison operand that no result can equal: object(), NaN."""
+    for n in ast.walk(e):
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "object":
+            return True
+        if isinstance(n, ast.Attribute) and n.attr == "nan":
+            return True
+        if (isinstance(n, ast.Constant) and isinstance(n.value, str)
+                and n.value.strip().lower().lstrip("+-") == "nan"):
+            return True
+    return False
+
+
+def _is_direct_check(test: ast.AST, direct: set[str], is_source, depends) -> bool:
+    """`r`, `not r`, `isinstance(r, T)`, or a single comparison of r with an independent value.
+
+    Anything else (a value compared with itself or with another target-derived value,
+    arithmetic on r, r inside a display, `and` of several conditions, chained comparisons,
+    `is` with a fresh object, NaN or object()) can be false whatever target code returns, so
+    it cannot be wrong-value evidence.
+    """
+    def direct_(x: ast.AST) -> bool:
+        return _is_direct(x, direct, is_source, depends)
+
+    if isinstance(test, ast.UnaryOp) and isinstance(test.op, ast.Not):
+        test = test.operand
+    if direct_(test):
+        return True
+    if (isinstance(test, ast.Call) and isinstance(test.func, ast.Name)
+            and test.func.id == "isinstance" and len(test.args) == 2 and not test.keywords):
+        return direct_(test.args[0]) and not depends(test.args[1])
+    if not isinstance(test, ast.Compare) or len(test.ops) != 1:
+        return False
+    left, op, right = test.left, test.ops[0], test.comparators[0]
+    for result, other in ((left, right), (right, left)):
+        if not direct_(result) or depends(other):
+            continue
+        if isinstance(op, (ast.Is, ast.IsNot)):
+            return isinstance(other, ast.Constant) and any(other.value is s for s in _SINGLETONS)
+        if not isinstance(op, _COMPARE_OPS) or _is_unsatisfiable_operand(other):
+            return False
+        empty = (isinstance(other, (ast.Tuple, ast.List, ast.Set)) and not other.elts
+                 or isinstance(other, ast.Dict) and not other.keys)
+        return not (isinstance(op, ast.In) and empty and result is left)
+    return False
+
+
+def _direct_assertions(main: ast.AST, is_source, depends) -> bool:
+    """Whether every assert in the main test is a direct check of a target result."""
+    direct = _direct_names(main, is_source, depends)
+    asserts = [n for n in ast.walk(main) if isinstance(n, ast.Assert)]
+    return bool(asserts) and all(_is_direct_check(a.test, direct, is_source, depends)
+                                 for a in asserts)
+
+
 def _policy_problems(tree: ast.AST, repo_tops: set[str]) -> list[str]:
     """Imports, names and attribute access that the policy rejects (hygiene, not security)."""
     errors: list[str] = []
@@ -403,6 +518,19 @@ def validate_test(
             main, lambda n, tainted: _refs_target(n, bound_from_target | helpers | tainted,
                                                   target_names))
         errors.extend(problems)
+        # Wrong-value evidence needs more than "mentions the result": `assert r != r` does too.
+        # Helpers are not sources here, since a helper can call target code and return 0.
+        sources = bound_from_target | helpers
+        tainted = _tainted_names(
+            main, lambda n, names: _refs_target(n, sources | names, target_names))
+        if asserts_on_target and not _direct_assertions(
+                main, lambda n: _refs_target(n, bound_from_target, target_names),
+                lambda n: _refs_target(n, sources | tainted, target_names)):
+            asserts_on_target = False
+            warnings.append(
+                f"an assert in {MAIN_TEST}() is not a direct check of a target result (for "
+                "example `assert result == expected`); if it fails, the failure will not count "
+                "as evidence of a wrong-value bug")
 
     return ValidationResult(ok=not errors, errors=errors, warnings=warnings,
                             exercises_target=exercises, has_control_test=has_control,

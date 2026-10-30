@@ -275,3 +275,64 @@ def test_assertion_flag_is_set_only_when_every_assertion_depends_on_target():
     assert with_assert.ok and with_assert.asserts_on_target_result
     no_assert = v(reproduces("    register({})\n"))
     assert no_assert.ok and not no_assert.asserts_on_target_result  # nothing to rely on
+
+
+# --- M9.2 H2: wrong-value evidence needs a direct check of the result ---------------------------
+# These assertions mention the target result, so R1's dependency check accepts them, but each is
+# false whatever target code returns. They may run, but must never count as wrong-value evidence.
+CONST_HELPER = ("\ndef _h(p):\n    register(p)\n    return 0\n"
+                "\n\ndef _g(p):\n    return register(p)\n")
+
+
+@pytest.mark.parametrize("body", [
+    "    r = register({'username': 'a'})\n    assert r != r\n",
+    "    r = register({'username': 'a'})\n    assert r == r + 'x'\n",
+    "    r = register({'username': 'a'})\n    y = len(str(r)) * 0\n    assert y == 1\n",
+    "    r = register({'username': 'a'})\n    assert [r] == []\n",
+    "    r = register({'username': 'a'})\n    assert (r, 0)[1]\n",
+    "    r = register({'username': 'a'})\n    assert r is []\n",
+    "    r = register({'username': 'a'})\n    assert r is 'zzz'\n",
+    "    r = register({'username': 'a'})\n    assert r == object()\n",
+    "    r = register({'username': 'a'})\n    assert r == float('nan')\n",
+    "    r = register({'username': 'a'})\n    assert r == math.nan\n",
+    "    r = register({'username': 'a'})\n    assert r in ()\n",
+    "    r = register({'username': 'a'})\n    assert r == 'a' and r == 'b'\n",
+    "    r = register({'username': 'a'})\n    assert 'b' < r < 'a'\n",
+    "    assert _h({'username': 'a'}) == 1\n",
+    "    r = register({'username': 'a'})\n    s = [r]\n    assert s[0] == 'b'\n",
+    "    r = register({'username': 'a'})\n    e = [r][0]\n    assert r != e\n",
+    "    r = register({'username': 'a'})\n    assert r != _g({'username': 'a'})\n",
+])
+def test_always_false_assertions_on_the_result_are_not_wrong_value_evidence(body):
+    r = v(reproduces(body, "import math\n" + CONST_HELPER))
+    assert not r.asserts_on_target_result, body
+
+
+@pytest.mark.parametrize("body", [
+    "    assert register({'username': 'a'}) == 'b'\n",
+    "    r = register({'username': 'a'})\n    assert r == 'b'\n",
+    "    r = register({'username': 'a'})\n    assert 'b' == r\n",
+    "    r = register({'username': 'a'})\n    assert r.upper() == 'B'\n",
+    "    r = register({'username': 'a'})\n    u = r.upper()\n    assert u == 'B'\n",
+    "    r = register({'username': 'a'})\n    assert len(r) == 2\n",
+    "    r = register({'username': 'a'})\n    assert sorted(r) == ['a', 'b']\n",
+    "    r = register({'username': 'a'})\n    assert r[0] == 'b'\n",
+    "    r = register({'username': 'a'})\n    assert r is None\n",
+    "    r = register({'username': 'a'})\n    assert r is not None\n",
+    "    r = register({'username': 'a'})\n    assert r\n",
+    "    r = register({'username': 'a'})\n    assert not r\n",
+    "    r = register({'username': 'a'})\n    assert 'b' in r\n",
+    "    r = register({'username': 'a'})\n    assert r not in ['a']\n",
+    "    r = register({'username': 'a'})\n    assert isinstance(r, int)\n",
+    "    r = register({'username': 'a'})\n    assert r == pytest.approx(0.3)\n",
+    "    r = register({'username': 'a'})\n    assert round(r, 2) == 0.3\n",
+    "    r, = register({'username': 'a'})\n    assert r == 'b'\n",
+    "    expected = 'b'\n    r = register({'username': 'a'})\n    assert r == expected\n",
+    "    r = register({'username': 'a'})\n    assert r == []\n",
+    "    r = register({'username': 'a'})\n    assert r == {'name': 'a'}\n",
+    "    assert (n := register({'username': 'a'})) == 'zzz'\n",
+    "    for r in register({'username': 'a'}):\n        assert r == 'zzz'\n",
+])
+def test_direct_checks_of_the_result_are_wrong_value_evidence(body):
+    r = v(reproduces(body, "import pytest\n"))
+    assert r.ok and r.asserts_on_target_result, (body, r.errors)

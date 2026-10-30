@@ -150,12 +150,21 @@ def test_prompt_v2_renders_and_states_the_stricter_validator_rules():
     assert "<bug_report>\nR\n</bug_report>" in req.user and "R\n" not in req.system
 
 
-def test_prompt_v3_states_the_assertion_rule_and_the_worker_uses_it():
-    from redfirst.worker import __main__ as worker_main
-
-    assert worker_main.PROMPT == ("generate_test", "v3")
+def test_prompt_v3_states_the_assertion_rule():
     v3 = load_prompt("generate_test", "v3")
     req = v3.render(report="R", evidence="E", feedback="", allowed_imports="pytest")
     assert req.prompt_version == "v3"
     assert "assert False" in req.system and "unittest" in req.system and "request" in req.system
+    assert "R\n" not in req.system  # untrusted text still only in the user message
+
+
+def test_prompt_v4_states_the_direct_check_rule_and_the_worker_uses_it():
+    from redfirst.worker import __main__ as worker_main
+
+    assert worker_main.PROMPT == ("generate_test", "v4")
+    req = load_prompt("generate_test", "v4").render(report="R", evidence="E", feedback="",
+                                                    allowed_imports="pytest")
+    assert req.prompt_version == "v4"
+    assert "assert result == expected" in req.system and "pytest.approx" in req.system
+    assert "assert False" in req.system  # the v3 rules are kept
     assert "R\n" not in req.system  # untrusted text still only in the user message

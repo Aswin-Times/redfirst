@@ -74,10 +74,15 @@ target code; and the validator confirmed that **every assertion in the main test
 value returned by target code** (`asserts_on_target_result`). The last condition exists because
 a test that fails whatever the repository does (`assert False`, `assert 1 == 2`,
 `raise AssertionError`) would otherwise count as a reproduction on a bug-free repository; such
-tests are rejected before they run. The check is a heuristic (it follows names assigned from
-target calls through assignments, loops and `with ... as`) and cannot tell an assertion that
-mentions a result but is still always false. The report states which kind of evidence was used,
-because it is weaker than a failure inside target code.
+tests are rejected before they run. Since M9.2 the flag also requires every assertion to be a
+**direct check** of a target result: `r`, `not r`, `isinstance(r, T)`, or a single comparison of
+`r` (or `len(r)`, `r.attr`, `r[k]`, `r.method()`) with a value that does not depend on target
+code; `is` only with `None`, `True` or `False`; no `and`, no chained comparisons, never
+`object()` or NaN. `assert r != r`, `assert [r] == []` or arithmetic such as
+`y = len(r) * 0; assert y == 1` mention the result but are false whatever it is; such tests may
+still run, but their failure is `unrelated_failure`. This is still a heuristic: a direct
+comparison with a value no result can take (`assert len(r) == -1`) is not detected. The report
+states which kind of evidence was used, because it is weaker than a failure inside target code.
 
 ## Repeated runs
 
