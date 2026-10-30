@@ -48,3 +48,8 @@ def test_source_roots_go_on_pythonpath():
     a = args(source_roots=("src", "."))
     env = next(x for x in a if x.startswith("PYTHONPATH="))
     assert env == "PYTHONPATH=/plugin:/repo/src:/repo"
+
+
+def test_container_is_not_auto_removed_so_its_state_can_be_inspected():
+    # D9: with --rm Docker deletes the container on exit, before the runner can read OOMKilled.
+    assert "--rm" not in args()

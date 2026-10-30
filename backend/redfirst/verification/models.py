@@ -25,15 +25,26 @@ class TestContract(BaseModel):
 
 
 class TracebackFrame(BaseModel):
-    file: str
+    file: str  # as reported by the test process; shown in evidence, never matched directly
     function: str
+    # Set by the trusted runner from known roots (see verification/paths.py):
+    repo_path: str | None = None  # path relative to the repository root; None if outside it
+    in_generated_test: bool = False  # frame is in the generated test file itself
 
 
 class RunResult(BaseModel):
-    """Parsed facts from one sandbox run. Built by the runner, never by the LLM."""
+    """Parsed facts from one sandbox run. Built by the runner, never by the LLM.
+
+    The collector report comes from inside the test process and is untrusted; the runner
+    cross-checks it against facts it observed itself (exit code, kills). Any problem is listed
+    in ``integrity_errors`` and the verifier then refuses to reach a verdict about the bug.
+    """
 
     runner_crashed: bool = False
+    runner_error: str | None = None
     report_parsed: bool = True
+    integrity_errors: list[str] = Field(default_factory=list)
+    exit_code: int | None = None  # observed by the runner, not taken from the report
     timed_out: bool = False
     oom_killed: bool = False
     collection_error: bool = False

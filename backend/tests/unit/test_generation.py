@@ -139,3 +139,12 @@ def test_evidence_is_bounded_and_selected(tmp_path: Path):
     assert 'import_as="app.users"' in text and "[truncated by REDFIRST]" in text
     assert "<existing_test" in text and "billing" not in text
     assert len(text) < 10_000
+
+
+def test_prompt_v2_renders_and_states_the_stricter_validator_rules():
+    v2 = load_prompt("generate_test", "v2")
+    req = v2.render(report="R", evidence="E", feedback="", allowed_imports="pytest")
+    assert req.prompt_version == "v2"
+    assert "importorskip" in req.system and "io.open" in req.system and "_underscore" in req.system
+    # untrusted text still only appears in the user message
+    assert "<bug_report>\nR\n</bug_report>" in req.user and "R\n" not in req.system

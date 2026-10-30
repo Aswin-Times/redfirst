@@ -1,18 +1,19 @@
 """HTTP routes. The API never executes repository code; the worker does, in the sandbox."""
 
+import asyncio
 import json
 import shutil
 import tempfile
-import time
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import PlainTextResponse, Response, StreamingResponse
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
 from redfirst.api.schemas import (
     InvestigationIn,
@@ -26,7 +27,7 @@ from redfirst.db.models import BugReport, Investigation, InvestigationEvent, Pro
 from redfirst.db.retention import NotFinished, delete_investigation, sweep_blobs
 from redfirst.db.session import session_scope
 from redfirst.domain.enums import InvestigationState as S
-from redfirst.domain.state_machine import is_terminal
+from redfirst.domain.state_machine import InvalidTransition, is_terminal
 from redfirst.repos.extract import UnsafeArchive, extract_archive
 from redfirst.repos.layout import detect_layout
 from redfirst.verification.report import build_report, render_markdown
@@ -148,9 +149,10 @@ def create_investigation(project_id: str, body: InvestigationIn, request: Reques
 
 
 @router.get("/investigations", response_model=list[InvestigationOut])
-def list_investigations(request: Request, project_id: str | None = None, limit: int = 50):
+def list_investigations(request: Request, project_id: str | None = None,
+                        limit: Annotated[int, Query(ge=1, le=200)] = 50):
     with _session(request) as s:
-        q = select(Investigation).order_by(Investigation.created_at.desc()).limit(min(limit, 200))
+        q = select(Investigation).order_by(Investigation.created_at.desc()).limit(limit)
         if project_id:
             q = q.join(BugReport, BugReport.id == Investigation.bug_report_id) \
                  .where(BugReport.project_id == project_id)
@@ -182,48 +184,71 @@ def remove_investigation(inv_id: str, request: Request):
 def cancel_investigation(inv_id: str, request: Request):
     with _session(request) as s:
         inv = _get(s, Investigation, inv_id)
-        if is_terminal(inv.state):
-            raise HTTPException(409, f"investigation already {inv.state.value}")
-        service.transition(s, inv, S.CANCELLED, "cancelled by user")
+        try:  # retries on a fresh read if the worker moves the run on concurrently
+            service.cancel(s, inv, "cancelled by user")
+        except (InvalidTransition, service.StaleState) as exc:
+            raise HTTPException(409, str(exc)) from exc
         return _inv_out(s, inv)
+
+
+_END = "event: end\ndata: {}\n\n"
+KEEPALIVE_SECONDS = 15.0  # keep proxies from closing an idle connection
+
+
+def _load_events(engine, inv_id: str, last_id: int) -> tuple[list[dict], S | None]:
+    """Events after ``last_id`` and the current state (None if the investigation is gone).
+
+    Blocking database work; called through the threadpool so the event loop never waits on it.
+    """
+    with session_scope(engine) as s:
+        events = s.scalars(select(InvestigationEvent).where(
+            InvestigationEvent.investigation_id == inv_id,
+            InvestigationEvent.id > last_id).order_by(InvestigationEvent.id)).all()
+        inv = s.get(Investigation, inv_id)
+        return ([{"id": e.id, "state": e.to_state.value, "message": e.message, "data": e.data,
+                  "at": e.created_at.isoformat()} for e in events],
+                inv.state if inv is not None else None)
+
+
+async def event_stream(engine, inv_id: str, last_id: int, poll: float,
+                       is_disconnected: Callable[[], Awaitable[bool]]) -> AsyncIterator[str]:
+    """SSE chunks for one investigation. Idle waiting is ``asyncio.sleep``: an open stream holds
+    no worker thread, only a coroutine. Stops on disconnect, deletion or a terminal state."""
+    idle = 0.0
+    while True:
+        if await is_disconnected():
+            return
+        events, state = await run_in_threadpool(_load_events, engine, inv_id, last_id)
+        if state is None:
+            yield _END
+            return
+        for e in events:
+            last_id = e["id"]
+            payload = {k: e[k] for k in ("state", "message", "data", "at")}
+            yield f"id: {e['id']}\nevent: state\ndata: {json.dumps(payload)}\n\n"
+        if is_terminal(state):
+            yield _END
+            return
+        await asyncio.sleep(poll)
+        idle = 0.0 if events else idle + poll
+        if idle >= KEEPALIVE_SECONDS:
+            idle = 0.0
+            yield ": keep-alive\n\n"
 
 
 @router.get("/investigations/{inv_id}/events")
 def stream_events(inv_id: str, request: Request):
     """Server-Sent Events from the persisted event log; ends once the investigation is final."""
-    engine = request.app.state.engine
-    poll = request.app.state.settings.worker_poll_seconds / 2
     with _session(request) as s:
         _get(s, Investigation, inv_id)
     header = request.headers.get("last-event-id", "0")
     last_id = int(header) if header.isdigit() else 0
-
-    def gen() -> Iterator[str]:
-        nonlocal last_id
-        idle = 0.0
-        while True:
-            with session_scope(engine) as s:
-                events = s.scalars(select(InvestigationEvent).where(
-                    InvestigationEvent.investigation_id == inv_id,
-                    InvestigationEvent.id > last_id).order_by(InvestigationEvent.id)).all()
-                state = s.get(Investigation, inv_id).state
-                for e in events:
-                    last_id = e.id
-                    data = {"state": e.to_state.value, "message": e.message, "data": e.data,
-                            "at": e.created_at.isoformat()}
-                    yield f"id: {e.id}\nevent: state\ndata: {json.dumps(data)}\n\n"
-            if is_terminal(state):
-                yield "event: end\ndata: {}\n\n"
-                return
-            time.sleep(poll)
-            idle += poll
-            if idle >= 15:  # keep proxies from closing the connection
-                idle = 0.0
-                yield ": keep-alive\n\n"
-
+    poll = request.app.state.settings.worker_poll_seconds / 2
+    stream = event_stream(request.app.state.engine, inv_id, last_id, poll,
+                          request.is_disconnected)
     # no-transform stops compressing proxies (e.g. the Next.js dev proxy) from buffering
     # the stream; X-Accel-Buffering does the same for nginx.
-    return StreamingResponse(gen(), media_type="text/event-stream", headers={
+    return StreamingResponse(stream, media_type="text/event-stream", headers={
         "Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"})
 
 

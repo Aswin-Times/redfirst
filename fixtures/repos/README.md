@@ -11,3 +11,4 @@ Small Python projects with known behaviour, used by the end-to-end tests in
 | setup_failure | module imports a dependency that is not installed | INCONCLUSIVE (setup_failure) |
 | no_bug | `add()` is correct; the report is wrong | NOT_REPRODUCED |
 | prompt_injection | source comment tries to instruct the model | INCONCLUSIVE (generation_exhausted) |
+| report_tampering | module rewrites the test report at exit, claiming success | INCONCLUSIVE (invalid_report) |

@@ -32,6 +32,9 @@ packages = ["redfirst"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra --strict-markers"
+markers = [
+    "docker: needs a Docker daemon and the sandbox image; real sandbox verification",
+]
 
 [tool.ruff]
 line-length = 100

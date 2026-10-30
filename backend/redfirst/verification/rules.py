@@ -6,9 +6,11 @@ Rules are evaluated in order; the first match decides.
 from redfirst.domain.enums import Outcome as O
 from redfirst.domain.enums import OutcomeReason as R
 from redfirst.domain.enums import TestPhase, TestStatus
-from redfirst.verification.models import RunResult, TestContract, Verdict
+from redfirst.verification.models import RunResult, TestContract, TracebackFrame, Verdict
+from redfirst.verification.paths import canonical_target
 
 MAIN_TEST_NAME = "test_reproduces_bug"  # must match sandbox.results.MAIN_TEST
+PYTEST_INTERNAL_ERRORS = (3, 4)  # must match sandbox.results.PYTEST_INTERNAL_ERRORS
 
 
 def _signature_matches(run: RunResult, contract: TestContract) -> bool:
@@ -20,37 +22,53 @@ def _signature_matches(run: RunResult, contract: TestContract) -> bool:
     return not (sig.message_contains and sig.message_contains not in run.message)
 
 
-def _hits_target(run: RunResult, contract: TestContract) -> bool:
-    targets = [t.replace("\\", "/") for t in contract.target_modules]
-    return any(f.file.replace("\\", "/").endswith(t) for f in run.frames for t in targets)
+def _target_frames(run: RunResult, contract: TestContract) -> list[TracebackFrame]:
+    """Frames whose repository-relative path equals a contract target exactly.
+
+    ``repo_path`` is set by the runner only for files inside the repository root, so library
+    files, installed copies and look-alike names elsewhere never match.
+    """
+    targets = {t for t in map(canonical_target, contract.target_modules) if t}
+    return [f for f in run.frames if f.repo_path is not None and f.repo_path in targets]
 
 
 def _wrong_value_in_main_test(run: RunResult, contract: TestContract) -> bool:
     """A wrong-return-value bug fails on the test's own assertion, not inside target code.
 
     Accepted only when an AssertionError was both predicted and observed, it was raised
-    directly in the main test, and the validator established that test calls target code.
+    directly in the main test of the generated test file, and the validator established that
+    the test calls target code.
     """
+    last = run.frames[-1] if run.frames else None
     return (
         contract.expected_signature.exception_type == "AssertionError"
         and run.exception_type == "AssertionError"
         and contract.exercises_target
-        and bool(run.frames)
-        and run.frames[-1].function == MAIN_TEST_NAME
+        and last is not None
+        and last.in_generated_test
+        and last.function == MAIN_TEST_NAME
     )
 
 
 def _classify_run(run: RunResult, contract: TestContract) -> Verdict:
-    killed = run.timed_out or run.oom_killed  # a killed run legitimately has no report
-    if run.runner_crashed or (not run.report_parsed and not killed):
+    if run.runner_crashed:
         return Verdict(outcome=O.EXECUTION_ERROR, reason=R.RUNNER_FAILURE,
-                       evidence=["runner crashed or produced no parseable report"])
+                       evidence=[run.runner_error or "the runner could not run the test"])
+    if run.timed_out or run.oom_killed:  # killed runs are judged on the kill, not the report
+        return Verdict(outcome=O.INCONCLUSIVE, reason=R.RESOURCE_LIMIT,
+                       evidence=["timeout" if run.timed_out else "out of memory"])
+    if not run.report_parsed or run.integrity_errors:
+        problems = run.integrity_errors or ["no usable structured report"]
+        if run.exit_code in PYTEST_INTERNAL_ERRORS:
+            return Verdict(outcome=O.EXECUTION_ERROR, reason=R.RUNNER_FAILURE, evidence=[
+                f"pytest exited with {run.exit_code} (internal or usage error)", *problems])
+        # Fail closed: the report comes from inside the test process and cannot be trusted
+        # here, so no conclusion is drawn about the bug.
+        return Verdict(outcome=O.INCONCLUSIVE, reason=R.INVALID_REPORT, evidence=[
+            *problems, f"pytest exit code observed by the runner: {run.exit_code}"])
     if run.collection_error or run.main_phase in (TestPhase.COLLECTION, TestPhase.SETUP):
         return Verdict(outcome=O.INCONCLUSIVE, reason=R.SETUP_FAILURE,
                        evidence=[f"failure before the test body ran: {run.message[:200]}"])
-    if run.timed_out or run.oom_killed:
-        return Verdict(outcome=O.INCONCLUSIVE, reason=R.RESOURCE_LIMIT,
-                       evidence=["timeout" if run.timed_out else "out of memory"])
     if run.main_status is TestStatus.MISSING or run.main_status is TestStatus.SKIPPED:
         return Verdict(outcome=O.INCONCLUSIVE, reason=R.UNCLASSIFIABLE,
                        evidence=[f"main test status: {run.main_status.value}"])
@@ -72,18 +90,23 @@ def _classify_run(run: RunResult, contract: TestContract) -> Verdict:
     if run.main_phase is not TestPhase.CALL:
         return Verdict(outcome=O.INCONCLUSIVE, reason=R.UNRELATED_FAILURE,
                        evidence=[f"failure in phase {run.main_phase}"])
-    in_target = _hits_target(run, contract)
+    in_target = _target_frames(run, contract)
     if not in_target and not _wrong_value_in_main_test(run, contract):
         return Verdict(outcome=O.INCONCLUSIVE, reason=R.UNRELATED_FAILURE,
-                       evidence=["no traceback frame in a target module"])
+                       evidence=["no traceback frame in a target file inside the repository"])
     if not _signature_matches(run, contract):
         return Verdict(outcome=O.INCONCLUSIVE, reason=R.SIGNATURE_MISMATCH,
                        evidence=[f"got {run.exception_type}: {run.message[:200]}"])
-    where = ("failure raised inside target code" if in_target else
-             "assertion on target code's result failed in the main test")
+    if in_target:
+        where = ["failure raised inside target code",
+                 *[f"target frame {f.repo_path}:{f.function}" for f in in_target[-3:]]]
+    else:
+        last = run.frames[-1]
+        where = ["assertion on target code's result failed in the main test",
+                 f"assertion in the generated test at {last.function}"]
     return Verdict(outcome=O.REPRODUCED, reason=R.MATCHING_FAILURE,
-                   evidence=[f"{run.exception_type}: {run.message[:200]}", where,
-                             *[f"frame {f.file}:{f.function}" for f in run.frames[-3:]]])
+                   evidence=[f"{run.exception_type}: {run.message[:200]}", *where,
+                             f"pytest exit code observed by the runner: {run.exit_code}"])
 
 
 def classify(runs: list[RunResult], contract: TestContract) -> Verdict:

@@ -25,6 +25,7 @@ sandbox and the live Claude API have not been exercised yet (see Known limitatio
 | M6 Orchestrator, worker, API, export | done; end-to-end tested on 6 fixture repos with scripted model output and local (unsandboxed) pytest execution |
 | M7 Frontend (Next.js) | done; unit-tested, production build passes, and checked in a browser against a running API (live SSE updates, desktop and phone width, light and dark) |
 | M8 Hardening and docs | done for what can be tested without Docker or a live model: LLM budgets, input and queue caps, secret redaction, retention, threat model, sandbox notes. The sandbox itself is still unverified |
+| M9 Correctness and verdict integrity | done, uncommitted: canonical target matching, untrusted-report checks, stricter validator, conditional state transitions, worker leases, container lifecycle (OOM detection), async SSE, archive limits, LLM accounting, pagination bounds, retention order, and a CI workflow for Docker. **Docker tests have still never run** (no Docker locally; CI not yet run) |
 
 ## Setup (Windows / macOS / Linux)
 
@@ -38,9 +39,23 @@ uv run python -m pytest        # use `python -m pytest`; some Windows policies b
 uv run ruff check .
 ```
 
+Tests marked `docker` are the only ones that use the real container sandbox; they are skipped
+when Docker or the sandbox image is missing. To run them (set `REDFIRST_REQUIRE_DOCKER=1` to make
+a missing Docker a failure instead of a skip):
+
+```bash
+docker build -t redfirst-sandbox-python:3.12 sandbox-images/python
+cd backend
+REDFIRST_REQUIRE_DOCKER=1 uv run python -m pytest -m docker -rA
+```
+
+CI: `.github/workflows/sandbox.yml` runs the non-Docker suite and the Docker suite on GitHub's
+Linux runners (read-only token, no secrets, actions pinned by SHA).
+
 Copy `.env.example` to `backend/.env` and adjust. Never commit real secrets.
 
-Apply database migrations (needs a database; see `REDFIRST_DATABASE_URL`):
+Apply database migrations (needs a database; see `REDFIRST_DATABASE_URL`). Existing databases
+must be upgraded before running M9 code: migration `0002` adds the worker lease columns.
 
 ```bash
 uv run python -m alembic upgrade head
@@ -74,7 +89,7 @@ evidence, the generated test, per-run logs, the bug report, a timeline and expor
 | POST | `/api/projects/{id}/repositories` | Upload a zip/tar.gz (multipart field `archive`); validated by a safe extraction |
 | GET | `/api/projects/{id}/repositories` | List repositories |
 | POST | `/api/projects/{id}/investigations` | Create an investigation from a bug report |
-| GET | `/api/investigations` | History (optional `project_id`) |
+| GET | `/api/investigations` | History (optional `project_id`; `limit` 1-200, default 50; out of range is 422) |
 | GET | `/api/investigations/{id}` | Full evidence report |
 | GET | `/api/investigations/{id}/events` | Live progress (Server-Sent Events; honours `Last-Event-ID`) |
 | POST | `/api/investigations/{id}/cancel` | Cancel a running investigation |
@@ -84,8 +99,23 @@ evidence, the generated test, per-run logs, the bug report, a timeline and expor
 
 The API never runs repository code. The worker claims `CREATED` investigations from the
 database (no message broker), drives them through the state machine and commits at every
-stage, so partial investigations remain inspectable. On start-up it marks investigations left
-mid-pipeline by a dead worker as `FAILED` (`WorkerLost`); it does not resume them.
+stage, so partial investigations remain inspectable.
+
+### Workers and concurrency
+
+- Several workers may run at once. A claim is a compare-and-swap from `CREATED` that records
+  the worker id and a lease (`REDFIRST_WORKER_LEASE_SECONDS`, default 120). A heartbeat thread
+  renews the lease every quarter of that while the worker runs.
+- Every worker loop iteration fails runs whose lease has expired (`FAILED`, `WorkerLost`,
+  retryable). Starting a worker never touches runs a live worker is heartbeating. Runs are not
+  resumed. Lease expiry uses worker clocks, so keep worker hosts NTP-synchronised; the lease must
+  comfortably exceed clock skew.
+- State changes are compare-and-swap updates: a worker acting on a stale read (for example after
+  a user cancelled) gets a conflict and stops instead of overwriting the newer state.
+- **SQLite** serialises writers; the compare-and-swap claim and transitions are tested there,
+  including a multi-threaded claim race. Use SQLite for a single host only.
+- **PostgreSQL** additionally uses `FOR UPDATE SKIP LOCKED` so workers skip rows another worker is
+  claiming. The same compare-and-swap guarantees apply, but **PostgreSQL has not been tested**.
 
 ## Layout
 
@@ -116,6 +146,11 @@ sandbox-images/python/        sandbox image Dockerfile
   budget per investigation, a rolling 24-hour cap on LLM calls, and a cap on unfinished
   investigations (the API answers 429). An exhausted budget ends the investigation as
   `FAILED` / `EXECUTION_ERROR` with `LLMBudgetExceeded` (retryable).
+- **Untrusted test reports:** the pytest report is written inside the test process, so REDFIRST
+  treats it as untrusted input: strict schema, size limit, no symlinks, and a cross-check against
+  the exit code and OOM state read from the container runtime. Any contradiction ends the
+  attempt as `INCONCLUSIVE` / `invalid_report`. Code that controls both the report and its own
+  exit status can still forge a consistent result; see the threat model.
 - **Redaction:** common credential formats are removed from stored sandbox output, verdict
   evidence and model feedback, and from repository text before it is sent to the model.
 - **Retention:** finished investigations older than `REDFIRST_RETENTION_DAYS` (default 30) are
@@ -132,8 +167,11 @@ The model is used through a provider-neutral interface (`redfirst/llm/base.py`);
 Anthropic is implemented. Defaults: `claude-opus-5-5`, effort `high`, structured outputs via
 the official SDK, and **server-side refusal fallbacks enabled** (`REDFIRST_LLM_REFUSAL_FALLBACKS`;
 set to `false` to turn off). The API key comes from `REDFIRST_LLM_API_KEY`, or the SDK's own
-`ANTHROPIC_API_KEY` / profile resolution when unset. Every attempt records the model, prompt
-name and version, token usage and request id.
+`ANTHROPIC_API_KEY` / profile resolution when unset. Every attempt, including failed ones,
+records the provider, configured and served model, prompt name and version, a call status
+(`succeeded`, `invalid_output`, `refused`, `provider_error`, or `not_sent` when REDFIRST's own
+budget blocked the call), and token usage and request id when the provider reported them.
+Unknown usage is recorded as unknown, never estimated. The worker uses prompt `generate_test.v2`.
 
 The model never sets the verdict. Generated tests are validated statically
 (`validation/policy.py`), run in the sandbox, and classified by `verification/rules.py`.
@@ -145,17 +183,20 @@ The model never sets the verdict. Generated tests are validated statically
 - There is **no authentication**: anyone who can reach the API can read investigations and spend
   LLM budget. Keep it on localhost. See `docs/threat-model.md` for all residual risks.
 - Redaction only recognises common secret formats.
-- The Docker sandbox runner (`sandbox/runner.py`) and its 7 abuse tests (infinite loop, network,
-  read-only repo, fork bomb, memory, huge output) have **never been run**: no Docker on the dev
-  machine. The collector and result parsing are tested with a plain local pytest subprocess only.
-  To run them: install Docker, `docker build -t redfirst-sandbox-python:3.12 sandbox-images/python`,
-  then `uv run python -m pytest tests/integration/test_sandbox_docker.py`.
+- The Docker sandbox runner (`sandbox/runner.py`) and its 9 Docker tests (success, failure,
+  timeout, OOM, network, read-only repo, fork bomb, huge output, report tampering) have **never
+  been run**: no Docker on the dev machine, and the CI workflow has not run yet. The runner's
+  control flow is unit-tested against a fake docker CLI only.
+- A verdict on an untrusted repository can be forged by repository code that rewrites the test
+  report *and* exits with the matching status. Detection covers naive tampering only; see
+  `docs/threat-model.md`.
 - The generated test runs from a separate directory, so the repository's own `conftest.py` is
   not applied yet.
 - The Anthropic adapter is tested against a stubbed SDK client only; no real API call has been
   made. Generation quality on real bugs is unmeasured.
-- The static validator is a hygiene gate, not a security boundary; it can be evaded. It is also
-  strict: tests that need file access, `os` or `sys` are rejected for now.
+- The static validator is a hygiene gate, not a security boundary; it can be evaded (for
+  example through modules the repository itself imports). It is also strict: tests that need file
+  access, `os`, `sys`, `getattr` or private attributes of non-repository objects are rejected.
 - End-to-end tests use a scripted model and run fixture tests with plain local pytest, not the
   Docker sandbox. They prove the pipeline and verdict logic, not isolation or model quality.
 - The API and web UI have no authentication and are meant for single-user local use only.
@@ -166,8 +207,8 @@ The model never sets the verdict. Generated tests are validated statically
   in the main test that calls target code and the control test passes. This is weaker evidence
   than a failure inside target code, and the report says which kind it was.
 - Repositories that need packages beyond pytest cannot be exercised (no dependency install).
-- Database code has only been run against SQLite; multi-worker claiming relies on PostgreSQL's
-  `SKIP LOCKED` and is untested.
+- Database code has only been run against SQLite. PostgreSQL, including concurrent workers on
+  PostgreSQL, is untested.
 - SQLAlchemy is pinned to 2.0.x because 2.1 needs compiled modules that some Windows
   Application Control policies block.
 - File ranking quality has only been checked on small synthetic repos.

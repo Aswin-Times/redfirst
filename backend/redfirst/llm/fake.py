@@ -7,6 +7,7 @@ from redfirst.llm.base import LLMError, LLMRequest, LLMResult, T
 
 class FakeProvider:
     name = "fake"
+    model = "fake-model"
 
     def __init__(self, script: list[BaseModel | LLMError]) -> None:
         self._script = list(script)

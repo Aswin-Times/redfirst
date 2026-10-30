@@ -62,6 +62,12 @@ _NEXT_STEPS: dict[OutcomeReason, list[str]] = {
     OutcomeReason.MODEL_REFUSED: [
         "The model declined this request. Review the report wording and try again.",
     ],
+    OutcomeReason.INVALID_REPORT: [
+        "The structured test report was missing, malformed, or contradicted the exit code the "
+        "runner observed, so no conclusion was drawn. Code under test can rewrite this report.",
+        "Inspect the run output and the repository for code that writes files or exits early "
+        "(for example atexit hooks), then run the exported test yourself.",
+    ],
 }
 
 
@@ -83,6 +89,8 @@ class AttemptSummary(BaseModel):
     status: str
     model: str | None = None
     prompt: str | None = None
+    llm_call: str | None = None  # succeeded | invalid_output | refused | provider_error | not_sent
+    tokens: dict[str, int] | None = None  # None when the provider did not report usage
     validation_errors: list[str] = Field(default_factory=list)
     validation_warnings: list[str] = Field(default_factory=list)
     strategy: str | None = None
@@ -129,7 +137,10 @@ def build_report(s: Session, inv: Investigation) -> EvidenceReport:
             number=a.number, status=a.status, model=meta.get("model"),
             prompt=f"{meta['prompt_name']}@{meta['prompt_version']}" if meta.get("prompt_name")
             else None,
-            validation_errors=val.get("errors", []) or ([meta["error"]] if "error" in meta else []),
+            llm_call=meta.get("call_status"),
+            tokens=meta.get("usage") if meta.get("usage_known") else None,
+            validation_errors=(val.get("errors", [])
+                               or ([meta["error"]] if meta.get("error") else [])),
             validation_warnings=val.get("warnings", []),
             strategy=val.get("strategy"), assumptions=val.get("assumptions", []),
             test_code=gt.code if gt else None, contract=gt.contract if gt else None,

@@ -36,14 +36,19 @@ def delete_investigation(s: Session, inv: Investigation) -> set[str]:
     if not is_terminal(inv.state):
         raise NotFinished(f"investigation is {inv.state.value}")
     attempt_ids = list(s.scalars(select(Attempt.id).where(Attempt.investigation_id == inv.id)))
+    run_ids = list(s.scalars(select(ExecutionResult.id).where(
+        ExecutionResult.attempt_id.in_(attempt_ids)))) if attempt_ids else []
     refs: set[str] = set()
+    for row in s.execute(select(ExecutionResult.stdout_ref, ExecutionResult.stderr_ref)
+                         .where(ExecutionResult.id.in_(run_ids))):
+        refs.update(r for r in row if r)
+    # Children before parents: evidence may reference execution results (foreign key), so it
+    # goes first -- including any evidence that points at these runs from elsewhere.
+    s.execute(delete(EvidenceRecord).where(or_(EvidenceRecord.investigation_id == inv.id,
+                                               EvidenceRecord.execution_result_id.in_(run_ids))))
     if attempt_ids:
-        for row in s.execute(select(ExecutionResult.stdout_ref, ExecutionResult.stderr_ref)
-                             .where(ExecutionResult.attempt_id.in_(attempt_ids))):
-            refs.update(r for r in row if r)
-        s.execute(delete(ExecutionResult).where(ExecutionResult.attempt_id.in_(attempt_ids)))
+        s.execute(delete(ExecutionResult).where(ExecutionResult.id.in_(run_ids)))
         s.execute(delete(GeneratedTest).where(GeneratedTest.attempt_id.in_(attempt_ids)))
-    s.execute(delete(EvidenceRecord).where(EvidenceRecord.investigation_id == inv.id))
     s.execute(delete(Attempt).where(Attempt.investigation_id == inv.id))
     s.execute(delete(InvestigationEvent).where(InvestigationEvent.investigation_id == inv.id))
     report_id = inv.bug_report_id

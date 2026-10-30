@@ -106,3 +106,30 @@ def test_connection_error_is_unavailable():
     err = anthropic.APIConnectionError(request=httpx2.Request("POST", "https://api.anthropic.com"))
     with pytest.raises(LLMUnavailable):
         provider(StubClient(error=err)).generate(REQ, Out)
+
+
+# --- D7: errors carry the partial metadata the provider actually returned --------------------
+def test_truncated_response_error_carries_usage_request_id_and_model():
+    resp = response(stop_reason="max_tokens")
+    resp._request_id = "req_abc"
+    with pytest.raises(LLMInvalidOutput) as info:
+        provider(StubClient(result=resp)).generate(REQ, Out)
+    err = info.value
+    assert err.usage == {"input_tokens": 10, "output_tokens": 5}
+    assert err.request_id == "req_abc" and err.served_model == "claude-opus-5-5"
+
+
+def test_refusal_error_carries_usage():
+    with pytest.raises(LLMRefused) as info:
+        provider(StubClient(result=response(stop_reason="refusal"))).generate(REQ, Out)
+    assert info.value.usage == {"input_tokens": 10, "output_tokens": 5}
+
+
+def test_status_error_carries_status_code_and_no_invented_usage():
+    with pytest.raises(LLMUnavailable) as info:
+        provider(StubClient(error=api_error(anthropic.InternalServerError, 503))).generate(REQ, Out)
+    assert info.value.status_code == 503 and info.value.usage is None
+
+
+def test_provider_exposes_its_configured_model():
+    assert provider(StubClient(result=response())).model == "claude-opus-5-5"

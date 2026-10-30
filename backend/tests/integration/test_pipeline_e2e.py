@@ -6,6 +6,7 @@ safe extraction, analysis, validation, execution, verification and persistence.
 
 import uuid
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import select
@@ -96,6 +97,10 @@ REPORTS = {
                    expected_behavior="add(2, 2) == 4", actual_behavior="returns 5"),
     "prompt_injection": dict(title="invoice total off", description="billing invoice total",
                              expected_behavior="sum of items", actual_behavior="wrong total"),
+    "report_tampering": dict(title="register crashes without username",
+                             description="register a user with an email but no username",
+                             expected_behavior="ValueError about the username",
+                             actual_behavior="KeyError: 'username'"),
 }
 
 
@@ -149,6 +154,7 @@ def run(env: Env, fixture: str, tmp_path):
     ("no_bug", [NO_BUG], O.NOT_REPRODUCED, R.NO_FAILURE_OBSERVED),
     ("setup_failure", [SETUP, SETUP], O.INCONCLUSIVE, R.SETUP_FAILURE),
     ("prompt_injection", [INJECTED, INJECTED], O.INCONCLUSIVE, R.GENERATION_EXHAUSTED),
+    ("report_tampering", [EXCEPTION], O.INCONCLUSIVE, R.INVALID_REPORT),
 ])
 def test_fixture_outcomes(make_env, tmp_path, fixture, script, outcome, reason):
     env = make_env(script)
@@ -231,9 +237,13 @@ def test_cancellation_stops_the_pipeline(make_env, tmp_path):
 def test_recover_lost_marks_mid_pipeline_investigations_failed(make_env, tmp_path):
     env = make_env([])
     stuck = seed(env, "no_bug", tmp_path)
-    claim_next(env.deps.engine)  # now ANALYZING_REPORT, worker "dies"
+    claim_next(env.deps.engine, lease_seconds=60)  # now ANALYZING_REPORT, worker "dies"
     waiting = seed(env, "boundary_bug", tmp_path)
-    assert recover_lost(env.deps.engine) == [stuck]
+    # M9 (D5): a run is only recovered once its worker's lease has expired, never just
+    # because recovery ran; while the lease is live it is left alone.
+    assert recover_lost(env.deps.engine) == []
+    after_expiry = datetime.now(UTC) + timedelta(seconds=120)
+    assert recover_lost(env.deps.engine, now=after_expiry) == [stuck]
     with session_scope(env.deps.engine) as s:
         assert s.get(Investigation, stuck).state is S.FAILED
         assert s.get(Investigation, stuck).error["type"] == "WorkerLost"
@@ -250,3 +260,12 @@ def test_evidence_records_link_code_locations(make_env, tmp_path):
     with session_scope(env.deps.engine) as s:
         kinds = [r.kind for r in s.scalars(select(EvidenceRecord))]
     assert "code_location" in kinds and kinds[-1] == "verdict"
+
+
+def test_tampered_report_fails_closed_without_repeat_or_regeneration(make_env, tmp_path):
+    env = make_env([EXCEPTION])
+    report = run(env, "report_tampering", tmp_path)
+    assert (report.outcome, report.outcome_reason) == ("INCONCLUSIVE", "invalid_report")
+    assert len(report.attempts) == 1 and len(report.attempts[0].executions) == 1
+    assert any("implies exit code 0" in e for e in report.evidence)
+    assert report.attempts[0].executions[0].exit_code == 1  # the real outcome is recorded

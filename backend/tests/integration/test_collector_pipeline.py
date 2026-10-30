@@ -3,22 +3,17 @@
 This exercises parsing only. It is NOT sandboxed and only runs our own fixture code.
 """
 
-import json
-import os
-import subprocess
-import sys
 from pathlib import Path
 
 import pytest
 
 from redfirst.domain.enums import Outcome as O
 from redfirst.domain.enums import OutcomeReason as R
-from redfirst.sandbox import collector_plugin
+from redfirst.sandbox.executor import ExecRequest
 from redfirst.sandbox.results import build_run_result
-from redfirst.verification.models import FailureSignature, TestContract
+from redfirst.verification.models import FailureSignature, RunResult, TestContract
 from redfirst.verification.rules import classify
-
-PLUGIN_DIR = Path(collector_plugin.__file__).parent
+from tests.conftest import local_executor
 
 REPO = {
     "app/__init__.py": "",
@@ -34,29 +29,19 @@ CONTRACT = TestContract(
 )
 
 
-def run_local(tmp_path: Path, test_code: str) -> dict | None:
+def run_local(tmp_path: Path, test_code: str) -> RunResult:
     repo = tmp_path / "repo"
     for name, text in REPO.items():
         p = repo / name
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(text)
-    gen = tmp_path / "gen"
-    gen.mkdir()
-    (gen / "test_redfirst.py").write_text(test_code)
-    report = tmp_path / "report.json"
-    env = {**os.environ, "PYTHONPATH": os.pathsep.join([str(PLUGIN_DIR), str(repo)]),
-           "REDFIRST_REPORT_PATH": str(report), "PYTHONDONTWRITEBYTECODE": "1"}
-    subprocess.run(
-        [sys.executable, "-m", "pytest", str(gen / "test_redfirst.py"), "-p",
-         "collector_plugin", "-p", "no:cacheprovider", "--rootdir", str(gen), "-q"],
-        env=env, cwd=repo, capture_output=True, timeout=60, check=False,
-    )
-    return json.loads(report.read_text()) if report.is_file() else None
+    run = local_executor(ExecRequest(repo_dir=repo, test_code=test_code,
+                                     work_dir=tmp_path / "work", source_roots=(".",)))
+    return run.result
 
 
 def verdict(tmp_path, code, runs=2):
-    result = build_run_result(run_local(tmp_path, code))
-    return classify([result] * runs, CONTRACT)
+    return classify([run_local(tmp_path, code)] * runs, CONTRACT)
 
 
 CONTROL = 'def test_control():\n    assert register({"username": "a"}) == "a"\n'

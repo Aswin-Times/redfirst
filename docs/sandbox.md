@@ -16,23 +16,51 @@
 | One writable mount | `-v <out>:/out:rw`, receives only the JSON report |
 | No secrets, no Docker socket | environment holds only `PYTHONPATH`, the report path and `PYTHONDONTWRITEBYTECODE` |
 
-The worker (outside the container) enforces the wall-clock timeout, force-removes the
-container afterwards, truncates captured output to 256 KB per stream, and treats a missing
-report as "no usable result" rather than guessing.
+### Container lifecycle (`sandbox/runner.py`)
 
-**Status: the command's flags are unit-tested as strings. The container has never been run**
-because no Docker daemon was available on the development machine. Run the abuse tests before
-trusting any of the above:
+1. The run directory is created private to the worker (`0700`); inside it the generated-test
+   directory is `0755` and the output directory `0777`, because the container's uid does not own
+   host directories. Inside the container only the bind-mounted directories themselves are
+   visible, never their host parents. The worker's umask must let other users read the
+   extracted repository (the default `022` does).
+2. `docker run` starts the container **without `--rm`**, with the wall-clock timeout enforced by
+   the worker. On timeout the container is killed and waited for.
+3. The runner reads the container's state from Docker (`docker inspect`): exit code, `OOMKilled`,
+   and whether it ever started. A container that never started is a runner failure carrying
+   Docker's own error message.
+4. The container is removed (`docker rm --force --volumes`) in a `finally` block on every path.
+5. Captured output is truncated to 256 KB per stream.
+
+### The test report is untrusted
+
+The report is written by a pytest plugin in the same process as the code under test, which can
+rewrite it. The runner reads it as untrusted input (strict schema, 1 MB limit, symlinks refused)
+and cross-checks it against the exit code and OOM flag from step 3. A contradiction, or a
+missing or malformed report, makes the attempt `INCONCLUSIVE` / `invalid_report`. This catches
+corruption and naive tampering; it cannot stop code that also controls its own exit status
+(see `docs/threat-model.md`, row 9a).
+
+### Verification status
+
+**The container has never been run**: no Docker daemon was available on the development
+machine. The flags are tested as strings and the lifecycle is tested against a fake docker CLI;
+neither proves runtime behaviour. Run the Docker tests before trusting any of the above:
 
 ```bash
 docker build -t redfirst-sandbox-python:3.12 sandbox-images/python
 cd backend
-uv run python -m pytest tests/integration/test_sandbox_docker.py -rs
+REDFIRST_REQUIRE_DOCKER=1 uv run python -m pytest -m docker -rA
 ```
 
-They cover an infinite loop, a network connection attempt, a write to the read-only repo, a
-fork bomb, a memory blow-up and 5 MB of output. A passing run shows these specific abuses are
-contained; it does not prove the container cannot be escaped.
+They cover a passing and a failing test (including repository-relative frame mapping), an
+infinite loop, an OOM kill, a network connection attempt, a write to the read-only repo, a fork
+bomb, 5 MB of output, a repository that rewrites the report, and container cleanup after each.
+
+`.github/workflows/sandbox.yml` runs the same tests on GitHub's Linux runners with
+`REDFIRST_REQUIRE_DOCKER=1` (so a missing Docker fails the job instead of skipping), lists every
+test that ran in the job summary, and uploads the JUnit results. It uses a read-only token, no
+secrets and SHA-pinned official actions. **It has not run yet.** A passing run shows these
+specific abuses are contained; it does not prove the container cannot be escaped.
 
 ## Why Docker alone is not enough
 

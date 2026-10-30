@@ -31,8 +31,10 @@ def build_docker_args(spec: SandboxSpec) -> list[str]:
         [CONTAINER_PLUGIN] + [f"{CONTAINER_REPO}/{r}".rstrip("/.") or CONTAINER_REPO
                               for r in spec.source_roots]
     )
+    # No --rm: the runner must read the exit code and OOM flag from the stopped container
+    # before removing it itself (sandbox/runner.py).
     return [
-        "docker", "run", "--rm", "--name", spec.name,
+        "docker", "run", "--name", spec.name,
         "--network", "none",
         "--read-only",
         "--tmpfs", f"/tmp:rw,noexec,nosuid,size={spec.tmpfs_size}",

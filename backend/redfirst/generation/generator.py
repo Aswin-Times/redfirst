@@ -5,7 +5,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from redfirst.llm.base import LLMError, LLMInvalidOutput, LLMProvider
+from redfirst.llm.base import LLMError, LLMInvalidOutput, LLMProvider, attempt_metadata
 from redfirst.llm.prompts import PromptTemplate
 from redfirst.validation.policy import ALLOWED_LIBRARIES, ValidationResult, validate_test
 from redfirst.verification.models import FailureSignature, TestContract
@@ -82,15 +82,20 @@ def generate_once(
     )
     try:
         result = provider.generate(request, GeneratedTestOutput)
-    except LLMInvalidOutput as exc:  # counts as an attempt; may succeed on retry
-        record.error = f"invalid model output: {exc}"
-        return record
-    except LLMError as exc:  # refusal, rejection, outage: the caller must stop
-        record.error = f"{type(exc).__name__}: {exc}"
-        record.llm_error = exc
+    except LLMError as exc:
+        if isinstance(exc, LLMInvalidOutput):  # counts as an attempt; may succeed on retry
+            record.error = f"invalid model output: {exc}"
+        else:  # refusal, rejection, outage: the caller must stop
+            record.error = f"{type(exc).__name__}: {exc}"
+            record.llm_error = exc
+        # Record what is known about the failed call; usage stays None if not reported.
+        record.llm_metadata = attempt_metadata(
+            provider, request, call_status=exc.call_status, usage=exc.usage,
+            served_model=exc.served_model, request_id=exc.request_id,
+            status_code=exc.status_code, error=record.error)
         return record
     record.output = result.output
-    record.llm_metadata = result.metadata(request)
+    record.llm_metadata = result.metadata(request, provider)
     record.validation = validate_test(result.output.test_code, modules,
                                       result.output.target_modules)
     return record

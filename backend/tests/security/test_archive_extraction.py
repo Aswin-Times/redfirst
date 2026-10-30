@@ -1,4 +1,5 @@
 import io
+import os
 import stat
 import tarfile
 import zipfile
@@ -172,3 +173,42 @@ def test_nonempty_destination_refused(tmp_path, dest):
     with pytest.raises(ValueError, match="empty"):
         extract_archive(z, dest)
     assert (dest / "keep.txt").exists()
+
+
+# --- D6: ratio limit must not reject small, legitimate, highly compressible archives ----------
+def test_small_archive_with_a_highly_compressible_generated_file_is_accepted(tmp_path, dest):
+    table = ("VALUES = [\n" + "    0,\n" * 60_000 + "]\n").encode()  # ~420 KB, compresses ~450x
+    z = make_zip(tmp_path / "gen.zip", {"proj/app/__init__.py": b"", "proj/app/table.py": table})
+    assert z.stat().st_size < 2_000
+    res = extract_archive(z, dest)
+    assert (dest / "app" / "table.py").read_bytes() == table and res.total_bytes == len(table)
+
+
+def test_bomb_just_past_the_ratio_free_allowance_is_rejected(tmp_path, dest):
+    limits = ExtractionLimits()
+    size = limits.ratio_free_bytes + 2 * 1024 * 1024
+    z = make_zip(tmp_path / "bomb.zip", {"zeros.bin": b"\0" * size})
+    assert z.stat().st_size * limits.max_ratio < size  # far beyond the ratio
+    with pytest.raises(UnsafeArchive, match="size limit"):
+        extract_archive(z, dest)
+    assert not dest.exists()
+
+
+def test_aggregate_size_limit_applies_even_within_the_ratio(tmp_path, dest):
+    noise = os.urandom(300_000)  # incompressible: ratio ~1, so only the total limit applies
+    z = make_zip(tmp_path / "many.zip", {f"f{i}.bin": noise for i in range(4)})
+    with pytest.raises(UnsafeArchive, match="size limit"):
+        extract_archive(z, dest, ExtractionLimits(max_total_bytes=1_000_000))
+
+
+@pytest.mark.parametrize("kind", ["zip", "tar.gz"])
+def test_truncated_archives_are_rejected_and_cleaned_up(tmp_path, dest, kind):
+    if kind == "zip":
+        good = make_zip(tmp_path / "ok.zip", {"a.py": os.urandom(50_000)})
+    else:
+        good = make_tar(tmp_path / "ok.tar.gz", lambda tf: tar_file(tf, "a.py", os.urandom(50_000)))
+    broken = tmp_path / f"broken.{kind}"
+    broken.write_bytes(good.read_bytes()[: good.stat().st_size // 2])
+    with pytest.raises(UnsafeArchive):
+        extract_archive(broken, dest)
+    assert not dest.exists()

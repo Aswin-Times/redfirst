@@ -39,6 +39,7 @@ class OutcomeReason(StrEnum):
     TARGET_NOT_EXERCISED = "target_not_exercised"
     GENERATION_EXHAUSTED = "generation_exhausted"
     MODEL_REFUSED = "model_refused"
+    INVALID_REPORT = "invalid_report"  # report missing, malformed, or contradicts the runner
     UNCLASSIFIABLE = "unclassifiable"
 
 

@@ -27,6 +27,10 @@ class ExtractionLimits:
     max_total_bytes: int = 200 * 1024 * 1024
     max_file_bytes: int = 50 * 1024 * 1024
     max_ratio: float = 100.0  # uncompressed / compressed, whole archive
+    # Any archive may expand to this many bytes regardless of ratio, so small archives with
+    # highly compressible files (generated tables, fixtures) are not rejected. Beyond it the
+    # ratio applies, and max_total_bytes / max_file_bytes always apply.
+    ratio_free_bytes: int = 10 * 1024 * 1024
     max_path_length: int = 255
     max_depth: int = 30
 
@@ -184,9 +188,9 @@ def extract_archive(
         raise UnsafeArchive("not a supported archive (zip, tar, tar.gz)")
 
     compressed = max(archive.stat().st_size, 1)
-    max_by_ratio = int(compressed * limits.max_ratio)
+    allowed = max(limits.ratio_free_bytes, int(compressed * limits.max_ratio), 1)
     effective = ExtractionLimits(
-        **{**limits.__dict__, "max_total_bytes": min(limits.max_total_bytes, max(max_by_ratio, 1))}
+        **{**limits.__dict__, "max_total_bytes": min(limits.max_total_bytes, allowed)}
     )
     dest.mkdir(parents=True, exist_ok=True)
     try:

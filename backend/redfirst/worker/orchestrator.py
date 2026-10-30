@@ -39,7 +39,7 @@ from redfirst.generation.generator import (
     rejection_feedback,
     to_contract,
 )
-from redfirst.llm.base import LLMProvider, LLMRefused
+from redfirst.llm.base import LLMProvider, LLMRefused, LLMRequest, attempt_metadata
 from redfirst.llm.prompts import PromptTemplate
 from redfirst.repos.extract import extract_archive
 from redfirst.repos.layout import detect_layout
@@ -50,15 +50,20 @@ from redfirst.storage.blobs import BlobStore
 from redfirst.validation.policy import module_map
 from redfirst.verification.models import RunResult, Verdict
 from redfirst.verification.rules import classify
+from redfirst.worker.lease import LeaseKeeper
 
 log = logging.getLogger(__name__)
 
 _RETRY_AFTER_EXECUTION = (OutcomeReason.SETUP_FAILURE, OutcomeReason.CONTROL_FAILED)
 _EXCERPT = 4_000
+BLOCKED = "blocked"  # attempt status for an LLM call refused by REDFIRST's own budget
 
 
-class Cancelled(Exception):
-    pass
+class Stopped(Exception):
+    """The run was cancelled, finished or recovered elsewhere; stop without writing."""
+
+
+Cancelled = Stopped  # previous name, kept for callers
 
 
 @dataclass(frozen=True)
@@ -84,31 +89,41 @@ class _Context:
 
 
 class Orchestrator:
-    def __init__(self, deps: Deps, investigation_id: str) -> None:
+    def __init__(self, deps: Deps, investigation_id: str, lease: LeaseKeeper | None = None) -> None:
         self.d = deps
         self.inv_id = investigation_id
+        self.lease = lease
         self.work = deps.work_root / investigation_id
 
     # -- persistence helpers -----------------------------------------------------------------
+    def _write_state(self, change) -> None:
+        """Apply a state change unless the run was cancelled, finished or recovered elsewhere.
+
+        ``change(session, inv)`` performs a compare-and-swap transition; if the row moved since
+        it was read (``StaleState``) or the lease was lost, the worker stops without writing.
+        """
+        if self.lease is not None and self.lease.lost.is_set():
+            raise Stopped("this worker's lease on the investigation was lost")
+        try:
+            with session_scope(self.d.engine) as s:
+                inv = s.get(Investigation, self.inv_id)
+                if inv is None or is_terminal(inv.state):
+                    raise Stopped(f"investigation is {inv.state.value if inv else 'deleted'}")
+                change(s, inv)
+        except service.StaleState as exc:
+            raise Stopped(f"investigation changed concurrently: {exc}") from exc
+
     def _advance(self, target: S, message: str = "", data: dict[str, Any] | None = None) -> None:
-        with session_scope(self.d.engine) as s:
-            inv = s.get(Investigation, self.inv_id)
-            if inv.state is S.CANCELLED:
-                raise Cancelled()
-            service.transition(s, inv, target, message, data)
+        self._write_state(lambda s, inv: service.transition(s, inv, target, message, data))
 
     def _complete(self, outcome: Outcome, reason: OutcomeReason, message: str = "") -> None:
-        with session_scope(self.d.engine) as s:
-            inv = s.get(Investigation, self.inv_id)
-            if inv.state is S.CANCELLED:
-                raise Cancelled()
-            service.complete(s, inv, outcome, reason, message)
+        self._write_state(lambda s, inv: service.complete(s, inv, outcome, reason, message))
 
     def _fail(self, error: dict[str, Any], message: str = "") -> None:
-        with session_scope(self.d.engine) as s:
-            inv = s.get(Investigation, self.inv_id)
-            if not is_terminal(inv.state):
-                service.fail(s, inv, error, message)
+        try:
+            self._write_state(lambda s, inv: service.fail(s, inv, error, message))
+        except Stopped as exc:  # whoever finished it first decided the outcome
+            log.info("not failing %s: %s", self.inv_id, exc)
 
     def _evidence(self, kind: str, payload: dict[str, Any], execution_id: str | None = None,
                   artifact_ref: str | None = None) -> None:
@@ -122,8 +137,8 @@ class Orchestrator:
         try:
             ctx = self._analyze()
             self._generate_execute_verify(ctx)
-        except Cancelled:
-            log.info("investigation %s cancelled", self.inv_id)
+        except Stopped as exc:
+            log.info("investigation %s stopped: %s", self.inv_id, exc)
         except Exception as exc:  # recorded as an infrastructure failure, then re-logged
             log.exception("investigation %s failed", self.inv_id)
             self._fail({"type": type(exc).__name__, "detail": str(exc)[:2000]},
@@ -135,6 +150,8 @@ class Orchestrator:
     def _analyze(self) -> _Context:
         with session_scope(self.d.engine) as s:
             inv = s.get(Investigation, self.inv_id)
+            if inv is None or is_terminal(inv.state):
+                raise Stopped(f"investigation is {inv.state.value if inv else 'deleted'}")
             if inv.state is not S.ANALYZING_REPORT:
                 raise RuntimeError(f"expected ANALYZING_REPORT, found {inv.state.value}")
             row = s.get(BugReport, inv.bug_report_id)
@@ -185,6 +202,7 @@ class Orchestrator:
         for number in range(1, max_attempts + 1):
             blocked = self._budget_block(tokens_used)
             if blocked:
+                self._save_blocked_attempt(blocked)
                 self._fail({"type": "LLMBudgetExceeded", "detail": blocked, "retryable": True},
                            "LLM budget exhausted")
                 return
@@ -226,13 +244,15 @@ class Orchestrator:
                 test.contract = contract.model_dump(mode="json")
 
             self._advance(S.EXECUTING_TEST, f"executing attempt {number}")
-            runs = self._execute(attempt_id, record.output.test_code, ctx)
+            runs, run_ids = self._execute(attempt_id, record.output.test_code, ctx)
 
             self._advance(S.VERIFYING_RESULT, f"verifying attempt {number}")
             verdict = classify([r.result for r in runs], contract)
             verdict_data = verdict.model_dump(mode="json")
             verdict_data["evidence"] = [redact(e) for e in verdict_data["evidence"]]
-            self._evidence("verdict", {"attempt": number, **verdict_data})
+            # Link the verdict to the execution results it was derived from (provenance).
+            self._evidence("verdict", {"attempt": number, "execution_result_ids": run_ids,
+                                       **verdict_data}, execution_id=run_ids[0])
 
             if verdict.outcome is Outcome.EXECUTION_ERROR:
                 self._fail({"type": "SandboxError", "detail": "; ".join(verdict.evidence)},
@@ -258,10 +278,27 @@ class Orchestrator:
                     f"({tokens_used} used)")
         since = datetime.now(UTC) - timedelta(hours=24)
         with session_scope(self.d.engine) as session:
-            calls = session.query(Attempt).filter(Attempt.created_at >= since).count()
+            calls = session.query(Attempt).filter(
+                Attempt.created_at >= since, Attempt.status != BLOCKED).count()
         if calls >= s.llm_max_calls_per_day:
             return f"daily limit of {s.llm_max_calls_per_day} LLM calls reached"
         return None
+
+    def _save_blocked_attempt(self, reason: str) -> None:
+        """Record a call REDFIRST refused to make, so the budget decision is auditable.
+
+        Blocked attempts never reached the provider: zero tokens is a fact, not an estimate,
+        and they are excluded from the daily call count.
+        """
+        request = LLMRequest(system="", user="", prompt_name=self.d.prompt.name,
+                             prompt_version=self.d.prompt.version)
+        meta = attempt_metadata(self.d.provider, request, call_status="not_sent",
+                                usage={"input_tokens": 0, "output_tokens": 0}, error=reason)
+        with session_scope(self.d.engine) as s:
+            inv = s.get(Investigation, self.inv_id)
+            attempt = service.start_attempt(s, inv, self.d.settings.max_generation_attempts)
+            attempt.status = BLOCKED
+            attempt.llm_metadata = meta
 
     def _save_attempt(self, record) -> str:
         with session_scope(self.d.engine) as s:
@@ -286,37 +323,43 @@ class Orchestrator:
                 attempt.llm_metadata = {**(attempt.llm_metadata or {}), "error": record.error}
             return attempt.id
 
-    def _execute(self, attempt_id: str, code: str, ctx: _Context) -> list[SandboxRun]:
+    def _execute(self, attempt_id: str, code: str,
+                 ctx: _Context) -> tuple[list[SandboxRun], list[str]]:
+        """Run the test; returns the runs and the ids of their persisted ExecutionResults."""
         runs: list[SandboxRun] = []
+        run_ids: list[str] = []
         for i in range(self.d.settings.reproduction_runs):
             run = self.d.executor(ExecRequest(
                 repo_dir=ctx.repo_dir, test_code=code,
                 work_dir=self.work / f"run-{attempt_id[:8]}-{i}", source_roots=ctx.source_roots,
             ))
             runs.append(run)
-            self._save_run(attempt_id, i, run)
+            run_ids.append(self._save_run(attempt_id, i, run))
             if not _worth_repeating(run.result):
                 break  # repeating a setup failure or crash adds no evidence
-        return runs
+        return runs, run_ids
 
-    def _save_run(self, attempt_id: str, index: int, run: SandboxRun) -> None:
+    def _save_run(self, attempt_id: str, index: int, run: SandboxRun) -> str:
         # Everything persisted or shown later is redacted first; raw output is never stored.
         stdout, stderr = redact(run.stdout), redact(run.stderr)
         stdout_ref = self.d.blobs.put_bytes(stdout.encode()) if stdout else None
         stderr_ref = self.d.blobs.put_bytes(stderr.encode()) if stderr else None
         parsed = run.result.model_dump(mode="json")
         parsed["message"] = redact(parsed["message"])
+        parsed["integrity_errors"] = [redact(e) for e in parsed["integrity_errors"]]
         with session_scope(self.d.engine) as s:
-            s.add(ExecutionResult(
+            row = ExecutionResult(
                 attempt_id=attempt_id, run_index=index, exit_code=run.exit_code,
                 duration_ms=run.duration_ms, timed_out=run.result.timed_out,
                 oom_killed=run.result.oom_killed, main_status=run.result.main_status,
                 stdout_ref=stdout_ref, stderr_ref=stderr_ref,
                 stdout_excerpt=stdout[-_EXCERPT:],
                 parsed={**parsed, "output_truncated": run.output_truncated},
-            ))
+            )
+            s.add(row)
             s.flush()
             s.query(Attempt).filter_by(id=attempt_id).update({"status": "executed"})
+            return row.id
 
     @staticmethod
     def _run_detail(run: SandboxRun) -> str:
@@ -327,13 +370,14 @@ class Orchestrator:
 
 
 def _tokens(metadata: dict[str, Any] | None) -> int:
+    """Tokens the provider reported for an attempt; unknown usage counts as nothing reported."""
     usage = (metadata or {}).get("usage") or {}
     return int(usage.get("input_tokens", 0)) + int(usage.get("output_tokens", 0))
 
 
 def _worth_repeating(r: RunResult) -> bool:
-    if r.runner_crashed or r.collection_error:
-        return False
+    if r.runner_crashed or r.collection_error or r.integrity_errors:
+        return False  # repeating a crash, setup failure or untrusted report adds no evidence
     if not r.report_parsed and not (r.timed_out or r.oom_killed):
         return False
     return r.main_phase not in (TestPhase.COLLECTION, TestPhase.SETUP)

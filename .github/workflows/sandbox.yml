@@ -1,0 +1,93 @@
+# Verifies the Docker sandbox on a Linux runner, plus the full non-Docker backend suite.
+#
+# Security notes:
+# - Triggered by push/pull_request (never pull_request_target), so pull requests from forks
+#   run with a read-only token and no repository secrets.
+# - No secrets are used. The workflow token is read-only and not persisted into the checkout.
+# - Third-party code is limited to official GitHub actions, pinned to full commit SHAs.
+name: Sandbox verification
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sandbox-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend tests (Linux, no Docker)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: "3.12"
+      - name: Install uv
+        run: python -m pip install "uv==0.13.6"
+      - name: Install locked dependencies
+        run: uv sync --locked
+      - name: Lint
+        run: uv run ruff check .
+      - name: Tests (everything except the Docker-marked tests)
+        run: uv run python -m pytest -m "not docker" -rA
+
+  docker-sandbox:
+    name: Docker sandbox tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: "3.12"
+      - name: Install uv
+        run: python -m pip install "uv==0.13.6"
+      - name: Install locked dependencies
+        working-directory: backend
+        run: uv sync --locked
+      - name: Docker environment
+        run: |
+          docker version
+          docker info --format 'cgroup v{{.CgroupVersion}}, security: {{.SecurityOptions}}'
+      - name: Build the sandbox image
+        run: docker build -t redfirst-sandbox-python:3.12 sandbox-images/python
+      - name: Run the Docker sandbox tests (unavailable Docker is a failure, not a skip)
+        working-directory: backend
+        env:
+          REDFIRST_REQUIRE_DOCKER: "1"
+        run: uv run python -m pytest -m docker -rA --junitxml=docker-results.xml
+      - name: List which Docker tests ran
+        if: always()
+        working-directory: backend
+        run: |
+          python - <<'EOF' >> "$GITHUB_STEP_SUMMARY"
+          import xml.etree.ElementTree as ET
+          root = ET.parse("docker-results.xml").getroot()
+          print("### Docker sandbox tests\n\n| Test | Result |\n|---|---|")
+          for case in root.iter("testcase"):
+              result = next((t for t in ("failure", "error", "skipped")
+                             if case.find(t) is not None), "passed")
+              print(f"| `{case.get('name')}` | {result} |")
+          EOF
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: docker-sandbox-results
+          path: backend/docker-results.xml
+          if-no-files-found: warn

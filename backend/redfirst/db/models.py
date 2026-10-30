@@ -82,6 +82,10 @@ class Investigation(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,
                                                  onupdate=_now)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Ownership while a worker runs it: set on claim, renewed by heartbeat. Recovery only acts
+    # on runs whose lease has expired (worker clocks must be roughly in sync; see README).
+    worker_id: Mapped[str | None] = mapped_column(String(100))
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     events: Mapped[list["InvestigationEvent"]] = relationship(
         back_populates="investigation", order_by="InvestigationEvent.id"

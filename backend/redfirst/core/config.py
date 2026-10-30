@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     sandbox_memory: str = "512m"
     upload_max_bytes: int = 50 * 1024 * 1024
     worker_poll_seconds: float = 2.0
+    # A run whose worker has not renewed its lease for this long is failed as WorkerLost.
+    # Must comfortably exceed clock skew between worker hosts (heartbeat every lease / 4).
+    worker_lease_seconds: float = Field(default=120.0, ge=10)
 
     # Abuse controls. Token budget counts input + output tokens across one investigation's
     # attempts; the daily cap counts LLM calls across all investigations (rolling 24h).

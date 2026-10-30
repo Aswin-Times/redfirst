@@ -9,6 +9,7 @@ from redfirst.db.models import (
     Base,
     BugReport,
     EvidenceRecord,
+    Investigation,
     InvestigationEvent,
     Project,
     Repository,
@@ -44,6 +45,17 @@ def test_alembic_migration_matches_models(tmp_path):
     cfg.attributes["engine"] = eng
     command.upgrade(cfg, "head")
     assert set(inspect(eng).get_table_names()) - {"alembic_version"} == set(Base.metadata.tables)
+    # Column-level check: the migrated schema must match the models exactly (catches a model
+    # change without a migration, e.g. the M9 lease columns).
+    from alembic.autogenerate import compare_metadata
+    from alembic.migration import MigrationContext
+
+    with eng.connect() as conn:
+        diffs = compare_metadata(MigrationContext.configure(conn), Base.metadata)
+    assert diffs == [], diffs
+    command.downgrade(cfg, "0001")
+    columns = {c["name"] for c in inspect(eng).get_columns("investigations")}
+    assert not {"worker_id", "lease_expires_at"} & columns
     command.downgrade(cfg, "base")
     assert set(inspect(eng).get_table_names()) == {"alembic_version"}
     eng.dispose()
@@ -115,3 +127,29 @@ def test_failed_transaction_rolls_back(engine):
 def test_foreign_keys_enforced(engine):
     with pytest.raises(IntegrityError), session_scope(engine) as s:
         s.add(EvidenceRecord(investigation_id="missing", kind="x", payload={}))
+
+
+# --- D11: retention must delete evidence before the execution results it references ------------
+def test_delete_removes_evidence_that_references_execution_results(engine):
+    from redfirst.db.models import Attempt, ExecutionResult
+    from redfirst.db.retention import delete_investigation
+
+    with session_scope(engine) as s:
+        inv = seed(s)
+        attempt = service.start_attempt(s, inv, 3)
+        run = ExecutionResult(attempt_id=attempt.id, run_index=0, exit_code=1,
+                              stdout_ref="a" * 64)
+        s.add(run)
+        s.flush()
+        s.add(EvidenceRecord(investigation_id=inv.id, kind="verdict", payload={"x": 1},
+                             execution_result_id=run.id))
+        service.transition(s, inv, S.CANCELLED)
+        inv_id = inv.id
+    with session_scope(engine) as s:  # foreign keys are enforced (PRAGMA foreign_keys=ON)
+        refs = delete_investigation(s, s.get(Investigation, inv_id))
+    assert refs == {"a" * 64}
+    with session_scope(engine) as s:
+        assert s.scalars(select(EvidenceRecord)).all() == []
+        assert s.scalars(select(ExecutionResult)).all() == []
+        assert s.scalars(select(Attempt)).all() == []
+        assert s.get(Investigation, inv_id) is None

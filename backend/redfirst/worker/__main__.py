@@ -1,8 +1,15 @@
-"""Worker process: ``python -m redfirst.worker [--once]``. Runs separately from the API."""
+"""Worker process: ``python -m redfirst.worker [--once]``. Runs separately from the API.
+
+Several workers may run at once. Each claims investigations under its own id, keeps a lease on
+the one it is running (heartbeat thread), and on every loop iteration fails runs whose owner's
+lease has expired, so a crashed worker's run is eventually closed by any surviving worker.
+"""
 
 import argparse
 import logging
 import time
+
+from sqlalchemy import Engine
 
 from redfirst.core.config import get_settings
 from redfirst.db.session import make_engine
@@ -10,10 +17,25 @@ from redfirst.llm.factory import make_provider
 from redfirst.llm.prompts import load_prompt
 from redfirst.sandbox.executor import DockerExecutor
 from redfirst.storage.blobs import BlobStore
+from redfirst.worker.lease import LeaseKeeper
 from redfirst.worker.orchestrator import Deps, Orchestrator
-from redfirst.worker.queue import claim_next, recover_lost
+from redfirst.worker.queue import claim_next, default_worker_id, recover_lost
 
-PROMPT = ("generate_test", "v1")
+PROMPT = ("generate_test", "v2")  # v2 states the stricter validator rules added in M9
+
+log = logging.getLogger("redfirst.worker")
+
+
+def run_one(deps: Deps, engine: Engine, worker_id: str, lease_seconds: float) -> str | None:
+    """One loop iteration: recover expired runs, then claim and run at most one investigation."""
+    for inv_id in recover_lost(engine):
+        log.warning("marked %s as failed: its worker's lease expired", inv_id)
+    inv_id = claim_next(engine, worker_id=worker_id, lease_seconds=lease_seconds)
+    if inv_id:
+        log.info("worker %s running investigation %s", worker_id, inv_id)
+        with LeaseKeeper(engine, inv_id, worker_id, lease_seconds) as lease:
+            Orchestrator(deps, inv_id, lease=lease).run()
+    return inv_id
 
 
 def main() -> None:
@@ -21,7 +43,6 @@ def main() -> None:
     parser.add_argument("--once", action="store_true", help="process at most one job and exit")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    log = logging.getLogger("redfirst.worker")
 
     settings = get_settings()
     engine = make_engine()
@@ -32,14 +53,10 @@ def main() -> None:
                                 settings.sandbox_memory),
         prompt=load_prompt(*PROMPT), work_root=settings.data_dir / "work",
     )
-    for inv_id in recover_lost(engine):
-        log.warning("marked %s as failed (worker lost)", inv_id)
-
+    worker_id = default_worker_id()
+    log.info("worker %s started", worker_id)
     while True:
-        inv_id = claim_next(engine)
-        if inv_id:
-            log.info("running investigation %s", inv_id)
-            Orchestrator(deps, inv_id).run()
+        inv_id = run_one(deps, engine, worker_id, settings.worker_lease_seconds)
         if args.once:
             return
         if not inv_id:

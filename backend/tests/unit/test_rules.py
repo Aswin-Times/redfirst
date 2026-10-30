@@ -29,7 +29,9 @@ def run(**kw):
         control_status=T.PASSED,
         exception_type="KeyError",
         message="'username'",
-        frames=[TracebackFrame(file="/repo/app/users.py", function="register")],
+        exit_code=1,
+        frames=[TracebackFrame(file="/repo/app/users.py", function="register",
+                               repo_path="app/users.py")],
     )
     base.update(kw)
     return RunResult(**base)
@@ -50,8 +52,31 @@ def test_runner_crash_is_execution_error():
     check([run(runner_crashed=True)], outcome=O.EXECUTION_ERROR, reason=R.RUNNER_FAILURE)
 
 
-def test_unparseable_report_is_execution_error():
-    check([run(report_parsed=False)], outcome=O.EXECUTION_ERROR, reason=R.RUNNER_FAILURE)
+def test_missing_or_unusable_report_is_invalid_not_a_verdict():
+    # Changed in M9 (D3): the report is produced inside the sandbox, where the code under test
+    # can delete or corrupt it, so a missing report after a normal exit is an untrusted result,
+    # not proof of an infrastructure failure. It must never become REPRODUCED/NOT_REPRODUCED.
+    v = check([run(report_parsed=False, integrity_errors=["no structured report was produced"])],
+              outcome=O.INCONCLUSIVE, reason=R.INVALID_REPORT)
+    assert any("no structured report" in e for e in v.evidence)
+
+
+def test_missing_report_with_pytest_internal_error_is_execution_error():
+    for code in (3, 4):  # pytest internal error / usage error: a runner or collector problem
+        check([run(report_parsed=False, exit_code=code)],
+              outcome=O.EXECUTION_ERROR, reason=R.RUNNER_FAILURE)
+
+
+def test_integrity_errors_override_an_otherwise_reproduced_run():
+    v = check([run(integrity_errors=["pytest exited with 0, but the report implies 1"])],
+              outcome=O.INCONCLUSIVE, reason=R.INVALID_REPORT)
+    assert any("exited with 0" in e for e in v.evidence)
+
+
+def test_integrity_errors_override_an_otherwise_not_reproduced_run():
+    passed = run(main_status=T.PASSED, exception_type=None, frames=[], exit_code=0,
+                 integrity_errors=["report contradicts exit code"])
+    check([passed], outcome=O.INCONCLUSIVE, reason=R.INVALID_REPORT)
 
 
 def test_import_error_in_collection_is_not_reproduction():
@@ -103,7 +128,8 @@ def test_failure_outside_target_is_unrelated():
 
 def _assert_run(function="test_reproduces_bug"):
     return run(exception_type="AssertionError", message="assert 0.0 == 0.1",
-               frames=[TracebackFrame(file="/gen/test_redfirst.py", function=function)])
+               frames=[TracebackFrame(file="/gen/test_redfirst.py", function=function,
+                                      in_generated_test=True)])
 
 
 def test_wrong_value_assertion_in_main_test_is_reproduced():
@@ -126,6 +152,56 @@ def test_assertion_in_helper_not_main_test_is_unrelated():
     c = contract(expected_signature=FailureSignature(exception_type="AssertionError"))
     check([_assert_run(function="helper")], c, outcome=O.INCONCLUSIVE,
           reason=R.UNRELATED_FAILURE)
+
+
+# --- D1: target matching is repository-relative, never a bare filename suffix -------------
+def test_library_file_whose_name_ends_with_the_target_is_not_target_code():
+    c = contract(target_modules=["utils.py"])
+    r = run(frames=[
+        TracebackFrame(file="/gen/test_redfirst.py", function="test_reproduces_bug",
+                       in_generated_test=True),
+        TracebackFrame(file="/usr/local/lib/python3.12/site-packages/lib/myutils.py",
+                       function="helper"),
+    ])
+    check([r] * 3, c, outcome=O.INCONCLUSIVE, reason=R.UNRELATED_FAILURE)
+
+
+def test_installed_copy_with_the_same_relative_path_is_not_target_code():
+    r = run(frames=[TracebackFrame(
+        file="/usr/local/lib/python3.12/site-packages/app/users.py", function="register")])
+    check([r], outcome=O.INCONCLUSIVE, reason=R.UNRELATED_FAILURE)
+
+
+def test_sibling_directory_sharing_a_prefix_is_not_target_code():
+    # "/repository/..." must not be treated as inside "/repo"; the runner leaves repo_path
+    # unset for it, so even a matching tail is not evidence.
+    r = run(frames=[TracebackFrame(file="/repository/app/users.py", function="register")])
+    check([r], outcome=O.INCONCLUSIVE, reason=R.UNRELATED_FAILURE)
+
+
+def test_non_canonical_target_spellings_still_match_the_repository_path():
+    for target in ("app\\users.py", "./app/users.py", "app//users.py"):
+        check([run()], contract(target_modules=[target]),
+              outcome=O.REPRODUCED, reason=R.MATCHING_FAILURE)
+
+
+def test_unsafe_target_spellings_never_match():
+    for target in ("/repo/app/users.py", "../app/users.py", "C:/repo/app/users.py"):
+        check([run()], contract(target_modules=[target]),
+              outcome=O.INCONCLUSIVE, reason=R.UNRELATED_FAILURE)
+
+
+def test_reproduced_evidence_names_the_matching_target_frame():
+    v = check([run()], outcome=O.REPRODUCED, reason=R.MATCHING_FAILURE)
+    assert any("app/users.py:register" in e for e in v.evidence)
+
+
+def test_wrong_value_allowance_requires_the_generated_test_file():
+    # A repository function that happens to be called test_reproduces_bug is not the test.
+    c = contract(expected_signature=FailureSignature(exception_type="AssertionError"))
+    r = run(exception_type="AssertionError", message="assert 1 == 2", frames=[TracebackFrame(
+        file="/repo/app/helpers.py", function="test_reproduces_bug", repo_path="app/helpers.py")])
+    check([r], c, outcome=O.INCONCLUSIVE, reason=R.UNRELATED_FAILURE)
 
 
 def test_main_test_name_matches_sandbox_constant():

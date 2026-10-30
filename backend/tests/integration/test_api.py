@@ -150,3 +150,31 @@ def test_validation_and_not_found(ctx):
     assert client.get("/api/investigations/nope").status_code == 404
     assert client.get("/api/investigations/nope/events").status_code == 404
     assert upload(client, "nope", zip_fixture("no_bug", tmp)).status_code == 404
+
+
+# --- D8: pagination bounds -----------------------------------------------------------------------
+@pytest.mark.parametrize(("limit", "status", "rows"), [
+    ("-1", 422, None),   # previously an unbounded query
+    ("0", 422, None),
+    ("1", 200, 1),       # minimum valid
+    ("200", 200, 3),     # maximum valid
+    ("201", 422, None),  # oversized: rejected rather than silently clamped
+    ("abc", 422, None),
+])
+def test_investigation_list_limit_is_bounded(ctx, limit, status, rows):
+    client, _, tmp = ctx
+    pid = new_project(client)
+    repo = upload(client, pid, zip_fixture("no_bug", tmp)).json()
+    for i in range(3):
+        client.post(f"/api/projects/{pid}/investigations",
+                    json={"repository_id": repo["id"], "bug_report": {"title": f"t{i}"}})
+    r = client.get("/api/investigations", params={"limit": limit})
+    assert r.status_code == status, r.text
+    if rows is not None:
+        assert len(r.json()) == rows
+
+
+def test_investigation_list_default_limit_is_unchanged(ctx):
+    client, _, _ = ctx
+    r = client.get("/api/investigations")
+    assert r.status_code == 200 and r.json() == []

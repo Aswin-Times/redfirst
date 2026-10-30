@@ -4,7 +4,6 @@
 sandbox and must only ever run the project's own fixture repositories.
 """
 
-import json
 import os
 import subprocess
 import sys
@@ -15,30 +14,40 @@ from pathlib import Path
 import pytest
 
 from redfirst.sandbox.executor import PLUGIN_DIR, ExecRequest
-from redfirst.sandbox.results import build_run_result
+from redfirst.sandbox.results import GENERATED_TEST_FILE, build_run_result, read_report
 from redfirst.sandbox.runner import SandboxRun
 
 FIXTURE_REPOS = Path(__file__).resolve().parents[2] / "fixtures" / "repos"
+
+# Only what Python and pytest need to start; never the developer's whole environment, which
+# may hold API keys.
+_ENV_PASSTHROUGH = ("PATH", "SYSTEMROOT", "WINDIR", "COMSPEC", "TEMP", "TMP", "TMPDIR",
+                    "HOME", "USERPROFILE", "USERNAME", "LANG", "LC_ALL")
 
 
 def local_executor(request: ExecRequest) -> SandboxRun:
     gen, out = request.work_dir / "gen", request.work_dir / "out"
     gen.mkdir(parents=True, exist_ok=True)
     out.mkdir(parents=True, exist_ok=True)
-    (gen / "test_redfirst.py").write_text(request.test_code, encoding="utf-8")
-    roots = [str((request.repo_dir / r).resolve()) for r in request.source_roots]
-    env = {**os.environ, "PYTHONPATH": os.pathsep.join([str(PLUGIN_DIR), *roots]),
-           "REDFIRST_REPORT_PATH": str(out / "report.json"), "PYTHONDONTWRITEBYTECODE": "1"}
+    test_file = gen / GENERATED_TEST_FILE
+    test_file.write_text(request.test_code, encoding="utf-8")
+    repo_root = request.repo_dir.resolve()
+    roots = [str((repo_root / r).resolve()) for r in request.source_roots]
+    env = {k: os.environ[k] for k in _ENV_PASSTHROUGH if k in os.environ}
+    env.update(PYTHONPATH=os.pathsep.join([str(PLUGIN_DIR), *roots]),
+               REDFIRST_REPORT_PATH=str(out / "report.json"), PYTHONDONTWRITEBYTECODE="1")
     started = time.monotonic()
     proc = subprocess.run(
-        [sys.executable, "-m", "pytest", str(gen / "test_redfirst.py"), "-p", "collector_plugin",
+        [sys.executable, "-m", "pytest", str(test_file), "-p", "collector_plugin",
          "-p", "no:cacheprovider", "--rootdir", str(gen), "-q", "--tb=short"],
-        cwd=request.repo_dir, env=env, capture_output=True, text=True, timeout=120, check=False,
+        cwd=repo_root, env=env, capture_output=True, encoding="utf-8", errors="replace",
+        timeout=120, check=False,
     )
-    report_path = out / "report.json"
-    report = json.loads(report_path.read_text()) if report_path.is_file() else None
-    return SandboxRun(build_run_result(report), proc.returncode,
-                      int((time.monotonic() - started) * 1000), proc.stdout, proc.stderr, False)
+    report, problem = read_report(out / "report.json")
+    result = build_run_result(report, report_problem=problem, exit_code=proc.returncode,
+                              repo_root=str(repo_root), test_file=str(test_file.resolve()))
+    return SandboxRun(result, proc.returncode, int((time.monotonic() - started) * 1000),
+                      proc.stdout, proc.stderr, False)
 
 
 def zip_fixture(name: str, dest: Path) -> Path:
