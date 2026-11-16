@@ -24,7 +24,9 @@ const file = (name: string, size = 1000) => {
 const input = () => screen.getByLabelText("Repository archive") as HTMLInputElement;
 const choose = (f: File) => fireEvent.change(input(), { target: { files: [f] } });
 
-beforeEach(() => upload.mockReset());
+beforeEach(() => {
+  upload.mockReset();
+});
 afterEach(cleanup);
 
 describe("ArchiveDropzone", () => {
