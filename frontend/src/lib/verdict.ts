@@ -1,5 +1,5 @@
 import { parseEvidence } from "@/lib/evidence";
-import { humanize } from "@/lib/outcome";
+import { humanize, parseTimestamp } from "@/lib/outcome";
 import type { EvidenceReport } from "@/lib/types";
 
 /** One plain sentence per outcome reason code (backend/redfirst/domain/enums.py). */
@@ -54,8 +54,8 @@ export function verdictFacts(report: EvidenceReport) {
 }
 
 export function elapsedMs(report: Pick<EvidenceReport, "created_at" | "completed_at">, now = Date.now()) {
-  const end = report.completed_at ? Date.parse(report.completed_at) : now;
-  return Math.max(0, end - Date.parse(report.created_at));
+  const end = report.completed_at ? parseTimestamp(report.completed_at) : now;
+  return Math.max(0, end - parseTimestamp(report.created_at));
 }
 
 export function formatElapsed(ms: number): string {

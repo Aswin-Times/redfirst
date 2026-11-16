@@ -37,8 +37,20 @@ export const STATE_LABEL: Record<InvestigationState, string> = {
 export const humanize = (value: string) =>
   value.charAt(0).toUpperCase() + value.slice(1).replaceAll("_", " ");
 
+/**
+ * Milliseconds since the epoch for an API timestamp. The backend sends UTC without a zone
+ * suffix ("2026-11-16T08:43:53.266"), which `Date` would read as local time and show wrong by
+ * the viewer's UTC offset; a timestamp that already names its zone is left alone.
+ */
+export function parseTimestamp(iso: string): number {
+  return Date.parse(/(?:Z|[+-]\d\d:?\d\d)$/i.test(iso) ? iso : `${iso}Z`);
+}
+
 export function formatDate(iso: string): string {
-  return new Date(iso).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+  return new Date(parseTimestamp(iso)).toLocaleString(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  });
 }
 
 export function formatDuration(ms: number | null): string {

@@ -28,7 +28,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useInvestigationEvents } from "@/hooks/use-investigation-events";
 import { useResource } from "@/hooks/use-resource";
 import { api } from "@/lib/api";
-import { STATE_LABEL, formatDate, formatDuration, humanize } from "@/lib/outcome";
+import { STATE_LABEL, formatDate, formatDuration, humanize, parseTimestamp } from "@/lib/outcome";
 import { isTerminal } from "@/lib/stages";
 import type { AttemptSummary, EvidenceReport } from "@/lib/types";
 
@@ -152,7 +152,7 @@ function WaitingForWorker({ data }: { data: EvidenceReport }) {
   const queued = data.state === "CREATED";
   useEffect(() => {
     if (!queued) return;
-    const age = Date.now() - new Date(data.created_at).getTime();
+    const age = Date.now() - parseTimestamp(data.created_at);
     const t = setTimeout(() => setWaitedLong(true), Math.max(0, WORKER_HINT_AFTER_MS - age));
     return () => clearTimeout(t);
   }, [queued, data.created_at]);
@@ -394,7 +394,7 @@ function TimelineTab({ data }: { data: EvidenceReport }) {
       {data.timeline.map((t, i) => (
         <li key={i} className="flex gap-3 text-sm">
           <time className="w-40 shrink-0 text-xs text-muted-foreground tabular-nums" dateTime={t.at}>
-            {new Date(t.at).toLocaleTimeString()}
+            {new Date(parseTimestamp(t.at)).toLocaleTimeString()}
           </time>
           <span className="w-44 shrink-0 font-medium">{STATE_LABEL[t.state]}</span>
           <span className="text-muted-foreground">{t.message}</span>

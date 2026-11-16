@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { errorMessage } from "@/lib/api";
-import { formatDuration, humanize } from "@/lib/outcome";
+import { formatDuration, humanize, parseTimestamp } from "@/lib/outcome";
 import { deriveStages } from "@/lib/stages";
 import { summarize } from "@/lib/summary";
 import type { InvestigationState, InvestigationSummary } from "@/lib/types";
@@ -88,5 +88,19 @@ describe("formatting", () => {
     expect(formatDuration(850)).toBe("850 ms");
     expect(formatDuration(2400)).toBe("2.4 s");
     expect(formatDuration(null)).toBe("–");
+  });
+});
+
+describe("parseTimestamp", () => {
+  it("reads the API's timezone-less timestamps as UTC, not local time", () => {
+    expect(parseTimestamp("2026-11-16T08:43:53.266348")).toBe(Date.UTC(2026, 10, 16, 8, 43, 53, 266));
+  });
+
+  it.each([
+    ["2026-11-16T08:43:53Z", Date.UTC(2026, 10, 16, 8, 43, 53)],
+    ["2026-11-16T14:13:53+05:30", Date.UTC(2026, 10, 16, 8, 43, 53)],
+    ["2026-11-16T08:43:53-00:00", Date.UTC(2026, 10, 16, 8, 43, 53)],
+  ])("leaves %s alone because it already names its zone", (iso, ms) => {
+    expect(parseTimestamp(iso)).toBe(ms);
   });
 });
