@@ -6,6 +6,7 @@ import { Clock, Square } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 
 import { CodeView, LogView } from "@/components/code-view";
+import { Breadcrumbs } from "@/components/breadcrumbs";
 import { CopyButton } from "@/components/copy-button";
 import { EvidenceSummary } from "@/components/evidence-summary";
 import { ExportMenu } from "@/components/export-menu";
@@ -26,11 +27,13 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { useDocumentTitle } from "@/hooks/use-document-title";
 import { useInvestigationEvents } from "@/hooks/use-investigation-events";
 import { useResource } from "@/hooks/use-resource";
 import { api } from "@/lib/api";
 import { STATE_LABEL, formatDate, formatDuration, humanize, parseTimestamp } from "@/lib/outcome";
 import { isTerminal } from "@/lib/stages";
+import { investigationTitle } from "@/lib/titles";
 import type { AttemptSummary, EvidenceReport } from "@/lib/types";
 
 const WORKER_HINT_AFTER_MS = 8_000;
@@ -41,10 +44,12 @@ export function InvestigationWorkspace() {
   const data = report.data;
   const live = Boolean(data) && !isTerminal(data!.state);
   const stream = useInvestigationEvents(id, live, () => void report.refresh());
+  useDocumentTitle(data ? investigationTitle(data) : "Investigation");
 
   if (report.error && !data) {
     return (
       <>
+        <Breadcrumbs items={[{ label: "Investigations", href: "/investigations" }, { label: "Investigation" }]} />
         <PageHeader title="Investigation" />
         <ErrorAlert error={report.error} title="Could not load this investigation" />
         <Link href="/investigations" className={buttonVariants({ variant: "link" })}>
@@ -56,6 +61,7 @@ export function InvestigationWorkspace() {
   if (!data) {
     return (
       <div aria-busy="true" aria-label="Loading" className="space-y-6">
+        <Breadcrumbs items={[{ label: "Investigations", href: "/investigations" }, { label: "Investigation" }]} />
         <Skeleton className="h-8 w-2/3" />
         <Skeleton className="h-36 rounded-xl" />
         <Skeleton className="h-48 rounded-xl" />
@@ -65,6 +71,9 @@ export function InvestigationWorkspace() {
 
   return (
     <>
+      <Breadcrumbs
+        items={[{ label: "Investigations", href: "/investigations" }, { label: data.bug_report.title }]}
+      />
       <PageHeader
         title={data.bug_report.title}
         description={

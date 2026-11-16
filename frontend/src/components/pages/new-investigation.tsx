@@ -7,6 +7,7 @@ import {
 } from "react";
 
 import { ArchiveDropzone } from "@/components/archive-dropzone";
+import { Breadcrumbs } from "@/components/breadcrumbs";
 import { ErrorAlert, LoadingRows, PageHeader } from "@/components/feedback";
 import { ReportStrength } from "@/components/report-strength";
 import { Button } from "@/components/ui/button";
@@ -174,6 +175,9 @@ export function NewInvestigation() {
 
   return (
     <>
+      <Breadcrumbs
+        items={[{ label: "Investigations", href: "/investigations" }, { label: "New investigation" }]}
+      />
       <PageHeader
         title="New investigation"
         description="Describe the bug and choose the code. REDFIRST will try to reproduce it with a test."
