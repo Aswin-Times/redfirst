@@ -38,7 +38,7 @@ describe("ArchiveDropzone", () => {
     choose(f);
     await waitFor(() => expect(onUploaded).toHaveBeenCalledWith(repo));
     expect(upload).toHaveBeenCalledWith("p1", f);
-    expect(screen.getByText(/added/i).textContent).toContain("2 Python files");
+    expect(screen.getByText(/^Added/).textContent).toBe("Added code.zip · 2 Python files · flat layout");
   });
 
   it("accepts a file dropped on the zone", async () => {

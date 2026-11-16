@@ -49,6 +49,20 @@ local day, relative times, the headline sentence, the `?result=` filter value) a
 tested. Charts are plain divs with text alternatives; there is no chart library. Counts cover the
 API's 200 most recent investigations, and the page says so.
 
+### The new-investigation page
+
+`lib/report-form.ts` holds the form's pure logic: field limits (mirrored from
+`backend/redfirst/analysis/report.py`; `report-form.test.ts` reads that file and fails if they
+drift), validation messages, the reason the Start button is disabled, the "What REDFIRST will
+use" checklist and tolerant draft parsing. Every checklist line states a real consequence of how
+results are decided; do not add a score. Drafts live in `localStorage` (guarded, like the theme).
+
+"Try a sample bug" uses `public/samples/accounts-demo.zip`, a stored zip of the planted-bug
+fixture. Rebuild it with `python frontend/scripts/make-sample.py` from the repository root; a
+test checks that it holds exactly the fixture's files and that the sample report describes the
+bug that is really in the code. Clicking the button creates (or reuses) a "Sample project" in the
+database; it never calls the model, only Start does.
+
 ### The investigation page
 
 The verdict leads: `VerdictBanner` shows the outcome, its reason in plain words, a caveat that

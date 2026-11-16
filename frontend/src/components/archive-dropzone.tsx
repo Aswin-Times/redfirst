@@ -3,12 +3,18 @@
 import { FileArchive, Loader, Upload } from "lucide-react";
 import { useRef, useState, type DragEvent } from "react";
 
-import { describeRepository } from "@/components/repository-upload";
 import { Button } from "@/components/ui/button";
 import { api } from "@/lib/api";
 import { checkArchive } from "@/lib/archive";
 import type { Repository } from "@/lib/types";
 import { cn } from "@/lib/utils";
+
+/** What the backend found in the archive, e.g. "2 Python files · flat layout". */
+function summary(repo: Repository): string {
+  const l = repo.layout;
+  if (!l) return "not analysed yet";
+  return `${l.python_file_count} Python file${l.python_file_count === 1 ? "" : "s"} · ${l.layout} layout`;
+}
 
 /** Drag-and-drop (or browse) upload of a repository archive, checked in the browser first. */
 export function ArchiveDropzone({
@@ -24,7 +30,7 @@ export function ArchiveDropzone({
   const [dragging, setDragging] = useState(false);
   const [uploading, setUploading] = useState<string>();
   const [error, setError] = useState<string>();
-  const [added, setAdded] = useState<Repository>();
+  const [added, setAdded] = useState<{ name: string; repo: Repository }>();
   const blocked = disabled || uploading !== undefined;
 
   async function handle(files: FileList | File[] | null | undefined) {
@@ -44,7 +50,7 @@ export function ArchiveDropzone({
     setUploading(file.name);
     try {
       const repo = await api.uploadRepository(projectId, file);
-      setAdded(repo);
+      setAdded({ name: file.name, repo });
       onUploaded(repo);
     } catch (e) {
       setError((e as Error).message);
@@ -116,7 +122,7 @@ export function ArchiveDropzone({
       {added && !error && (
         <p className="flex items-start gap-1.5 text-xs text-muted-foreground">
           <FileArchive className="mt-0.5 size-3.5 shrink-0" aria-hidden />
-          <span>Added: {describeRepository(added)}</span>
+          <span>Added {added.name} · {summary(added.repo)}</span>
         </p>
       )}
       {error && (
