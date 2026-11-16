@@ -15,10 +15,13 @@ const LINKS = [
   { href: "/projects", label: "Projects", match: (p: string) => p.startsWith("/projects") },
 ];
 
-export function NavLinks() {
+export function NavLinks({ className }: { className?: string }) {
   const pathname = usePathname();
   return (
-    <nav aria-label="Main" className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto text-sm [scrollbar-width:none]">
+    <nav
+      aria-label="Main"
+      className={cn("flex min-w-0 items-center gap-1 overflow-x-auto text-sm [scrollbar-width:none]", className)}
+    >
       {LINKS.map((l) => {
         const active = l.match(pathname);
         return (
@@ -27,7 +30,7 @@ export function NavLinks() {
             href={l.href}
             aria-current={active ? "page" : undefined}
             className={cn(
-              "shrink-0 rounded-md px-2 py-1 text-muted-foreground transition-colors hover:text-foreground",
+              "shrink-0 rounded-md px-2.5 py-1.5 text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50",
               active && "bg-muted text-foreground",
             )}
           >
