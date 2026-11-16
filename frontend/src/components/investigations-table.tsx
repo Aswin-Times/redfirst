@@ -9,6 +9,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { relativeTime } from "@/lib/dashboard";
 import { formatDate, humanize } from "@/lib/outcome";
 import type { InvestigationSummary, Project } from "@/lib/types";
 
@@ -56,7 +57,9 @@ export function InvestigationsTable({
                 {inv.outcome_reason ? humanize(inv.outcome_reason) : "–"}
               </TableCell>
               <TableCell className="hidden text-muted-foreground lg:table-cell">
-                {formatDate(inv.created_at)}
+                <time dateTime={inv.created_at} title={formatDate(inv.created_at)}>
+                  {relativeTime(inv.created_at)}
+                </time>
               </TableCell>
             </TableRow>
           ))}

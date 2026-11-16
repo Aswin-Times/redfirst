@@ -1,4 +1,4 @@
-import { formatDate, parseTimestamp } from "@/lib/outcome";
+import { OUTCOME_INFO, formatDate, parseTimestamp } from "@/lib/outcome";
 import { isTerminal } from "@/lib/stages";
 import { OUTCOMES } from "@/lib/summary";
 import type { InvestigationSummary, Outcome } from "@/lib/types";
@@ -68,4 +68,25 @@ export function needsAttention(items: InvestigationSummary[]): InvestigationSumm
   return items
     .filter((i) => !isTerminal(i.state) || i.state === "FAILED")
     .sort((a, b) => parseTimestamp(b.created_at) - parseTimestamp(a.created_at));
+}
+
+const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? "" : "s"}`;
+
+/** One sentence for the top of the dashboard: the non-zero outcomes, then what is running. */
+export function headline(counts: Record<Outcome, number>, running: number, total: number): string {
+  if (total === 0) return "No investigations yet.";
+  const parts = OUTCOMES.filter((o) => counts[o] > 0).map((o) => {
+    const label = OUTCOME_INFO[o].label.toLowerCase();
+    return o === "EXECUTION_ERROR" ? plural(counts[o], label) : `${counts[o]} ${label}`;
+  });
+  let text = plural(total, "investigation");
+  if (parts.length) text += `: ${parts.join(", ")}`;
+  if (running) text += `${parts.length ? ";" : ":"} ${running} still running`;
+  return `${text}.`;
+}
+
+/** The `?result=` value the list page understands: an outcome, "running", or "" for any. */
+export function resultParam(value: string | null): "" | Outcome | "running" {
+  if (value === "running") return value;
+  return (OUTCOMES as string[]).includes(value ?? "") ? (value as Outcome) : "";
 }

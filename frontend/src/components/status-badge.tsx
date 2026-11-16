@@ -41,7 +41,8 @@ export function StatusBadge({
       </Badge>
     );
   }
-  const Icon = state === "CANCELLED" ? Ban : state === "CREATED" ? CircleDashed : Loader;
+  const Icon =
+    state === "CANCELLED" ? Ban : state === "CREATED" ? CircleDashed : state === "FAILED" ? ServerCrash : Loader;
   const running = state !== "CANCELLED" && state !== "CREATED" && state !== "FAILED";
   return (
     <Badge variant="secondary" className={className}>

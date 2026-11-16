@@ -1,16 +1,23 @@
 "use client";
 
 import Link from "next/link";
-import { FolderGit2, SearchCode } from "lucide-react";
+import { SearchCode } from "lucide-react";
 
+import { ActivityChart } from "@/components/activity-chart";
 import { EmptyState, ErrorAlert, LoadingRows, PageHeader } from "@/components/feedback";
+import { FirstRun } from "@/components/first-run";
 import { InvestigationsTable } from "@/components/investigations-table";
+import { NeedsAttention } from "@/components/needs-attention";
+import { OutcomeBar } from "@/components/outcome-bar";
 import { buttonVariants } from "@/components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { useResource } from "@/hooks/use-resource";
 import { api } from "@/lib/api";
-import { OUTCOME_INFO } from "@/lib/outcome";
-import { OUTCOMES, summarize } from "@/lib/summary";
+import { dailyCounts, headline, needsAttention, outcomeShares } from "@/lib/dashboard";
+import { summarize } from "@/lib/summary";
 import type { InvestigationSummary } from "@/lib/types";
+
+const API_LIMIT = 200;
 
 export function Dashboard() {
   const data = useResource(
@@ -21,16 +28,34 @@ export function Dashboard() {
     [],
   );
 
+  const body = data.data;
+  const { counts, active } = summarize(body?.investigations ?? []);
   return (
     <>
       <PageHeader
         title="Dashboard"
-        description="Recent bug investigations and their verified outcomes."
+        description={
+          body && body.projects.length > 0
+            ? headline(counts, active, body.investigations.length)
+            : "Bug investigations and their verified outcomes."
+        }
       />
       {data.error && <ErrorAlert error={data.error} title="Could not load the dashboard" />}
-      {data.loading && !data.data && <LoadingRows rows={4} />}
-      {data.data && <DashboardBody {...data.data} />}
+      {data.loading && !body && <DashboardSkeleton />}
+      {body && <DashboardBody projects={body.projects} investigations={body.investigations} />}
     </>
+  );
+}
+
+function DashboardSkeleton() {
+  return (
+    <div aria-busy="true" aria-label="Loading" className="space-y-4">
+      <div className="grid gap-4 lg:grid-cols-3">
+        <LoadingRows rows={1} />
+        <LoadingRows rows={1} />
+      </div>
+      <LoadingRows rows={4} />
+    </div>
   );
 }
 
@@ -41,36 +66,37 @@ function DashboardBody({
   projects: Awaited<ReturnType<typeof api.projects>>;
   investigations: InvestigationSummary[];
 }) {
-  if (projects.length === 0) {
-    return (
-      <EmptyState
-        icon={FolderGit2}
-        title="No projects yet"
-        action={
-          <Link href="/projects" className={buttonVariants()}>
-            Create a project
-          </Link>
-        }
-      >
-        Create a project and upload a Python repository archive to start investigating bugs.
-      </EmptyState>
-    );
-  }
+  if (projects.length === 0) return <FirstRun />;
 
-  const { counts, active } = summarize(investigations);
+  const { counts } = summarize(investigations);
+  const attention = needsAttention(investigations);
   return (
     <div className="space-y-6">
-      <dl className="grid grid-cols-2 gap-px overflow-hidden rounded-lg border bg-border sm:grid-cols-3 lg:grid-cols-6">
-        <Stat label="Projects" value={projects.length} />
-        <Stat label="In progress" value={active} />
-        {OUTCOMES.map((o) => (
-          <Stat key={o} label={OUTCOME_INFO[o].label} value={counts[o]} />
-        ))}
-      </dl>
-      <p className="-mt-4 text-xs text-muted-foreground">
-        Counts cover the {investigations.length} most recent investigations
-        {investigations.length === 200 ? " (the API returns at most 200)" : ""}.
-      </p>
+      <div className="grid gap-4 lg:grid-cols-3">
+        <Card className="lg:col-span-2">
+          <CardHeader>
+            <CardTitle>Outcomes</CardTitle>
+            <CardDescription>
+              Covers the {investigations.length} most recent investigations
+              {investigations.length === API_LIMIT ? " (the API returns at most 200)" : ""}.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <OutcomeBar shares={outcomeShares(counts)} />
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader>
+            <CardTitle>Activity</CardTitle>
+            <CardDescription>Investigations started per day</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <ActivityChart days={dailyCounts(investigations)} />
+          </CardContent>
+        </Card>
+      </div>
+
+      <NeedsAttention items={attention} />
 
       <section>
         <div className="mb-3 flex items-center justify-between">
@@ -97,15 +123,6 @@ function DashboardBody({
           <InvestigationsTable items={investigations.slice(0, 8)} projects={projects} />
         )}
       </section>
-    </div>
-  );
-}
-
-function Stat({ label, value }: { label: string; value: number }) {
-  return (
-    <div className="bg-background px-4 py-3">
-      <dt className="text-xs text-muted-foreground">{label}</dt>
-      <dd className="mt-1 text-2xl font-semibold tabular-nums">{value}</dd>
     </div>
   );
 }

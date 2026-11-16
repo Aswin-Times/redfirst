@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 
-import { dailyCounts, needsAttention, outcomeShares, relativeTime } from "@/lib/dashboard";
+import {
+  dailyCounts, headline, needsAttention, outcomeShares, relativeTime, resultParam,
+} from "@/lib/dashboard";
 import type { InvestigationSummary, Outcome } from "@/lib/types";
 
 /** An API-style timestamp (UTC, no zone suffix) for a local date and time. */
@@ -104,4 +106,37 @@ describe("needsAttention", () => {
   it("is empty when everything finished normally", () => {
     expect(needsAttention([inv(), inv({ state: "CANCELLED", outcome: null })])).toEqual([]);
   });
+});
+
+describe("headline", () => {
+  it("summarises the non-zero outcomes and what is still running", () => {
+    expect(headline(counts({ REPRODUCED: 7, NOT_REPRODUCED: 2, INCONCLUSIVE: 1 }), 2, 12)).toBe(
+      "12 investigations: 7 reproduced, 2 not reproduced, 1 inconclusive; 2 still running.",
+    );
+  });
+
+  it("uses the singular for one", () => {
+    expect(headline(counts({ REPRODUCED: 1 }), 0, 1)).toBe("1 investigation: 1 reproduced.");
+  });
+
+  it("works with only running investigations", () => {
+    expect(headline(counts({}), 3, 3)).toBe("3 investigations: 3 still running.");
+  });
+
+  it("pluralises execution errors", () => {
+    expect(headline(counts({ EXECUTION_ERROR: 2 }), 0, 2)).toBe("2 investigations: 2 execution errors.");
+    expect(headline(counts({ EXECUTION_ERROR: 1 }), 0, 1)).toBe("1 investigation: 1 execution error.");
+  });
+
+  it("says so when there is nothing yet", () => {
+    expect(headline(counts({}), 0, 0)).toBe("No investigations yet.");
+  });
+});
+
+describe("resultParam", () => {
+  it.each([
+    ["REPRODUCED", "REPRODUCED"], ["NOT_REPRODUCED", "NOT_REPRODUCED"],
+    ["INCONCLUSIVE", "INCONCLUSIVE"], ["EXECUTION_ERROR", "EXECUTION_ERROR"],
+    ["running", "running"], [null, ""], ["", ""], ["reproduced", ""], ["bogus", ""],
+  ])("%j -> %j", (raw, want) => expect(resultParam(raw)).toBe(want));
 });

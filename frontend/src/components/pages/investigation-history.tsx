@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { RefreshCw, SearchCode } from "lucide-react";
 import { useState } from "react";
 
@@ -9,6 +10,7 @@ import { InvestigationsTable } from "@/components/investigations-table";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { useResource } from "@/hooks/use-resource";
 import { api } from "@/lib/api";
+import { resultParam } from "@/lib/dashboard";
 import { OUTCOME_INFO } from "@/lib/outcome";
 import type { Outcome } from "@/lib/types";
 
@@ -17,7 +19,10 @@ const selectClass =
 
 export function InvestigationHistory() {
   const [projectId, setProjectId] = useState("");
-  const [outcome, setOutcome] = useState<"" | Outcome | "running">("");
+  const searchParams = useSearchParams();
+  const [outcome, setOutcome] = useState<"" | Outcome | "running">(() =>
+    resultParam(searchParams.get("result")),
+  );
   const projects = useResource(() => api.projects(), []);
   const items = useResource(() => api.investigations(projectId || undefined), [projectId]);
 
@@ -53,7 +58,11 @@ export function InvestigationHistory() {
           <select
             className={selectClass}
             value={outcome}
-            onChange={(e) => setOutcome(e.target.value as typeof outcome)}
+            onChange={(e) => {
+              const next = e.target.value as typeof outcome;
+              setOutcome(next);
+              window.history.replaceState(null, "", next ? `?result=${next}` : window.location.pathname);
+            }}
           >
             <option value="">Any</option>
             <option value="running">No outcome yet</option>
