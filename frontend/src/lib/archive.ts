@@ -1,4 +1,6 @@
+import { relativeTime } from "@/lib/dashboard";
 import { UPLOAD_MAX_BYTES } from "@/lib/report-form";
+import type { Repository } from "@/lib/types";
 
 const EXTENSIONS = [".zip", ".tar.gz", ".tgz", ".tar"];
 
@@ -24,4 +26,16 @@ export function checkArchive(file: { name: string; size: number }): string | nul
     return `"${file.name}" is ${formatBytes(file.size)}, over the ${formatBytes(UPLOAD_MAX_BYTES)} limit.`;
   }
   return null;
+}
+
+/** A repository as a person would describe it: when it arrived and what is in it. */
+export function repoLabel(repo: Pick<Repository, "created_at" | "layout">, now = Date.now()): string {
+  const parts = [`Uploaded ${relativeTime(repo.created_at, now)}`];
+  const l = repo.layout;
+  if (!l) parts.push("not analysed yet");
+  else {
+    parts.push(`${l.python_file_count} Python file${l.python_file_count === 1 ? "" : "s"}`);
+    parts.push(`${l.layout} layout`);
+  }
+  return parts.join(" · ");
 }

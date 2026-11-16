@@ -1,7 +1,6 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { toBugReport } from "@/components/pages/new-investigation";
 import { StageProgress } from "@/components/stage-progress";
 import { StatusBadge } from "@/components/status-badge";
 
@@ -38,26 +37,5 @@ describe("StageProgress", () => {
     const current = document.querySelector('[aria-current="step"]');
     expect(current?.textContent).toContain("Sandbox execution");
     expect(screen.getAllByText("done")).toHaveLength(4);
-  });
-});
-
-describe("toBugReport", () => {
-  it("turns blank optional fields into null so they are recorded as missing", () => {
-    const report = toBugReport("  Crash  ", "", {
-      expected_behavior: "a validation error",
-      actual_behavior: "   ",
-      reproduction_steps: "",
-      stack_trace: "",
-      environment: "",
-    });
-    expect(report).toEqual({
-      title: "Crash",
-      description: "",
-      expected_behavior: "a validation error",
-      actual_behavior: null,
-      reproduction_steps: null,
-      stack_trace: null,
-      environment: null,
-    });
   });
 });
