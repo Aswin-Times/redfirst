@@ -49,6 +49,22 @@ local day, relative times, the headline sentence, the `?result=` filter value) a
 tested. Charts are plain divs with text alternatives; there is no chart library. Counts cover the
 API's 200 most recent investigations, and the page says so.
 
+### Accessibility
+
+`src/a11y.test.tsx` renders every page and each investigation state with a mocked API and fails
+on any axe-core violation (a dev-only dependency). jsdom has no layout, so colour contrast is
+switched off there and is measured against the running app instead (4.5:1 in both themes, see
+Brand and theme). Things worth keeping:
+
+- One live region per concern. The verdict banner's hidden region changes with the stage and the
+  result, never with the timer; `useAnnounce()` is for outcomes that are otherwise only visual.
+- No interactive element inside `role="img"`, and no single-character keyboard shortcuts
+  (WCAG 2.1.4). Ctrl/Cmd+Enter submits the new-investigation form.
+- Targets are at least 24 px; table rows use a stretched link; column headers are `scope="col"`.
+- Page titles come from the route; investigations use `investigationTitle()` so tabs read
+  "Reproduced: <bug> · REDFIRST". The layout's title template skips a page in its own segment.
+- Real screen readers have not been used on this app; automated checks cannot replace that.
+
 ### The new-investigation page
 
 `lib/report-form.ts` holds the form's pure logic: field limits (mirrored from
@@ -89,4 +105,6 @@ on every persisted state change.
 - `src/lib/types.ts` is hand-written to mirror the backend schemas; keep it in sync.
 - `jsdom` is pinned to 26 because newer releases need Node 20.19+ / 22.12+.
 - `@rolldown/binding-win32-x64-msvc` is an optional dependency: pnpm did not install Vitest's
-  native Windows binding on its own on the development machine.
+  native Windows binding on its own on the development machine. Adding or removing any package
+  can prune it again (Vitest then fails with "Cannot find native binding"); `pnpm install --force`
+  restores it.

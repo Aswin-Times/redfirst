@@ -30,6 +30,11 @@ describe("OutcomeBar", () => {
       .toBe("/investigations?result=INCONCLUSIVE");
   });
 
+  it("keeps the bar itself free of interactive elements (they may not sit inside role=img)", () => {
+    render(<OutcomeBar shares={outcomeShares(counts({ REPRODUCED: 3, INCONCLUSIVE: 1 }))} />);
+    expect(screen.getByRole("img").querySelectorAll("a, button, [tabindex]")).toHaveLength(0);
+  });
+
   it("shows counts and percentages, and keeps empty outcomes in the legend without a link", () => {
     render(<OutcomeBar shares={outcomeShares(counts({ REPRODUCED: 1, NOT_REPRODUCED: 1 }))} />);
     const legend = screen.getByRole("list", { name: "Outcome legend" });

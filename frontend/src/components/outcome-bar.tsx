@@ -30,14 +30,13 @@ export function OutcomeBar({ shares }: { shares: OutcomeShare[] }) {
         aria-label={`Outcomes: ${summary}`}
         className="flex h-3 gap-0.5 overflow-hidden rounded-full bg-muted"
       >
+        {/* Decorative: the legend below holds the links. Interactive elements may not sit inside
+            an element with role="img". */}
         {present.map((s) => (
-          <Link
+          <div
             key={s.outcome}
-            href={href(s.outcome)}
-            aria-hidden
-            tabIndex={-1}
             style={{ flexGrow: s.count }}
-            className={cn("min-w-2 basis-0 transition-opacity hover:opacity-80", COLOR[s.outcome])}
+            className={cn("min-w-2 basis-0", COLOR[s.outcome])}
           />
         ))}
       </div>
