@@ -29,6 +29,7 @@ sandbox and the live Claude API have not been exercised yet (see Known limitatio
 | M9.1 Review fixes (R1-R8) | done: assertions must depend on target results, validator bypasses closed, Host-header validation, SQLite-safe migrations, stdlib-shadowing fix, bounded output and no writable host mount for the sandbox, stronger Docker tests (17). **Still no Docker or PostgreSQL run** |
 | M9.2 Final-review fixes | done: web UI listens on 127.0.0.1 only; wrong-value evidence needs a direct check of the result (`assert r != r` no longer counts); the sandbox wrapper kills leftover processes with a builtin that works at the process limit; prompt v4. Docker behaviour still unverified |
 | M10 Verdict-first investigation page | done: the verdict is a banner with its reason, a caveat and key facts; evidence is shown by meaning with repository-relative paths; stage stepper, export menu, next steps beside the verdict; fixes dates that were off by the viewer's UTC offset. Checked live against all eight states, light and dark, desktop and phone width |
+| M11 Brand and dashboard | done: logo mark and warm neutral palette (red reserved for the mark and for confirmed bugs and errors), Light/System/Dark toggle, dashboard with outcome breakdown, 14-day activity, needs-attention list and first-run steps, `?result=` filter links, page transitions that respect reduced motion. Status colours checked at 4.5:1 contrast or better in both themes; 12 pages checked for overflow at 375 and 1280 px in both themes |
 
 ## Setup (Windows / macOS / Linux)
 

@@ -26,12 +26,28 @@ authentication first.
 src/app/                    routes: /, /investigations, /investigations/new,
                             /investigations/[id], /projects
 src/components/pages/       client components holding each page's data and state
-src/components/             shared UI (verdict banner, evidence summary, stage stepper,
-                            export menu, status badge, code/log views)
+src/components/             shared UI (verdict banner, evidence summary, stage stepper, export
+                            menu, outcome bar, activity chart, theme toggle, logo, code/log views)
 src/components/ui/          shadcn/ui primitives (generated; edit sparingly)
 src/hooks/                  useResource (fetch + refresh), useInvestigationEvents (SSE)
 src/lib/                    API client, types mirroring the backend, stage/outcome logic
 ```
+
+### Brand and theme
+
+Red is reserved: it is the colour of the logo mark and of what red means in the product (a
+confirmed bug, an error). Everything else is ink on warm neutrals, so a red badge always means
+something. Light, System and Dark are chosen with the header toggle (`lib/theme.ts`): the choice
+is kept in `localStorage` and applied as a `dark` class on `<html>`; a small inline script in
+`layout.tsx` applies it before first paint so there is no flash. Check any new colour token for
+4.5:1 contrast in both themes.
+
+### The dashboard
+
+`lib/dashboard.ts` holds the pure parts (outcome percentages that add up to 100, 14-day buckets by
+local day, relative times, the headline sentence, the `?result=` filter value) and is unit
+tested. Charts are plain divs with text alternatives; there is no chart library. Counts cover the
+API's 200 most recent investigations, and the page says so.
 
 ### The investigation page
 
