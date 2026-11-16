@@ -4,13 +4,14 @@ import Link from "next/link";
 import { SearchCode } from "lucide-react";
 
 import { ActivityChart } from "@/components/activity-chart";
-import { EmptyState, ErrorAlert, LoadingRows, PageHeader } from "@/components/feedback";
+import { EmptyState, ErrorAlert, PageHeader } from "@/components/feedback";
 import { FirstRun } from "@/components/first-run";
 import { InvestigationsTable } from "@/components/investigations-table";
 import { NeedsAttention } from "@/components/needs-attention";
 import { OutcomeBar } from "@/components/outcome-bar";
 import { buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Skeleton } from "@/components/ui/skeleton";
 import { useResource } from "@/hooks/use-resource";
 import { api } from "@/lib/api";
 import { dailyCounts, headline, needsAttention, outcomeShares } from "@/lib/dashboard";
@@ -49,12 +50,12 @@ export function Dashboard() {
 
 function DashboardSkeleton() {
   return (
-    <div aria-busy="true" aria-label="Loading" className="space-y-4">
+    <div aria-busy="true" aria-label="Loading" className="space-y-6">
       <div className="grid gap-4 lg:grid-cols-3">
-        <LoadingRows rows={1} />
-        <LoadingRows rows={1} />
+        <Skeleton className="h-40 rounded-xl lg:col-span-2" />
+        <Skeleton className="h-40 rounded-xl" />
       </div>
-      <LoadingRows rows={4} />
+      <Skeleton className="h-64 rounded-xl" />
     </div>
   );
 }

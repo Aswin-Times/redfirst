@@ -22,7 +22,7 @@ export function InvestigationsTable({
 }) {
   const projectName = new Map(projects?.map((p) => [p.id, p.name]));
   return (
-    <div className="overflow-x-auto rounded-lg border">
+    <div className="overflow-x-auto rounded-xl border bg-card">
       <Table>
         <TableHeader>
           <TableRow>

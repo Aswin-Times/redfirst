@@ -9,11 +9,12 @@ import { CodeView, LogView } from "@/components/code-view";
 import { CopyButton } from "@/components/copy-button";
 import { EvidenceSummary } from "@/components/evidence-summary";
 import { ExportMenu } from "@/components/export-menu";
-import { ErrorAlert, LoadingRows, PageHeader } from "@/components/feedback";
+import { ErrorAlert, PageHeader } from "@/components/feedback";
 import { Pipeline } from "@/components/stage-progress";
 import { VerdictBanner } from "@/components/verdict-banner";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -52,7 +53,15 @@ export function InvestigationWorkspace() {
       </>
     );
   }
-  if (!data) return <LoadingRows rows={6} />;
+  if (!data) {
+    return (
+      <div aria-busy="true" aria-label="Loading" className="space-y-6">
+        <Skeleton className="h-8 w-2/3" />
+        <Skeleton className="h-36 rounded-xl" />
+        <Skeleton className="h-48 rounded-xl" />
+      </div>
+    );
+  }
 
   return (
     <>
