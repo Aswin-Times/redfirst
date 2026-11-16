@@ -19,7 +19,7 @@ export function Breadcrumbs({ items }: { items: Crumb[] }) {
               {item.href ? (
                 <Link
                   href={item.href}
-                  className="rounded-sm underline-offset-4 outline-none hover:text-foreground hover:underline focus-visible:ring-2 focus-visible:ring-ring/50"
+                  className="inline-flex min-h-6 items-center rounded-sm px-0.5 underline-offset-4 outline-none hover:text-foreground hover:underline focus-visible:ring-2 focus-visible:ring-ring/50"
                 >
                   {item.label}
                 </Link>

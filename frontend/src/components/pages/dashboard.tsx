@@ -103,7 +103,10 @@ function DashboardBody({
         <div className="mb-3 flex items-center justify-between">
           <h2 className="text-sm font-medium">Recent investigations</h2>
           {investigations.length > 0 && (
-            <Link href="/investigations" className="text-sm text-muted-foreground hover:underline">
+            <Link
+              href="/investigations"
+              className="inline-flex min-h-6 items-center rounded-sm px-1 text-sm text-muted-foreground outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring/50"
+            >
               View all
             </Link>
           )}

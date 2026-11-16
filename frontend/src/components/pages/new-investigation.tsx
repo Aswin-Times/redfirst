@@ -241,7 +241,7 @@ export function NewInvestigation() {
                     type="button"
                     variant="link"
                     size="sm"
-                    className="h-auto justify-start p-0 text-xs"
+                    className="h-6 justify-start px-0 text-xs"
                     onClick={() => setShowCreate(true)}
                   >
                     <FolderPlus data-icon="inline-start" aria-hidden /> New project

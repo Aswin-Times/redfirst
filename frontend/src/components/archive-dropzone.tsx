@@ -101,7 +101,7 @@ export function ArchiveDropzone({
                 type="button"
                 variant="link"
                 size="sm"
-                className="h-auto p-0"
+                className="h-6 px-1"
                 disabled={blocked}
                 onClick={() => input.current?.click()}
               >

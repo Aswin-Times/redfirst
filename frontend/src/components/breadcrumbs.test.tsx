@@ -26,6 +26,7 @@ describe("Breadcrumbs", () => {
   it("links the ancestors and marks the current page without a link", () => {
     render(<Breadcrumbs items={items} />);
     expect(screen.getByRole("link", { name: "Investigations" }).getAttribute("href")).toBe("/investigations");
+    expect(screen.getByRole("link", { name: "Investigations" }).className).toContain("min-h-6");
     expect(screen.queryByRole("link", { name: "register crashes" })).toBeNull();
     expect(screen.getByText("register crashes").getAttribute("aria-current")).toBe("page");
   });

@@ -35,11 +35,11 @@ export function InvestigationsTable({
         </TableHeader>
         <TableBody>
           {items.map((inv) => (
-            <TableRow key={inv.id}>
+            <TableRow key={inv.id} className="relative">
               <TableCell className="max-w-72">
                 <Link
                   href={`/investigations/${inv.id}`}
-                  className="block truncate font-medium hover:underline"
+                  className="block truncate rounded-sm font-medium outline-none after:absolute after:inset-0 hover:underline focus-visible:ring-2 focus-visible:ring-ring/50"
                 >
                   {inv.title}
                 </Link>
