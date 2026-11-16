@@ -62,7 +62,7 @@ export function InvestigationWorkspace() {
   }
   if (!data) {
     return (
-      <div aria-busy="true" aria-label="Loading" className="space-y-6">
+      <div role="status" aria-busy="true" aria-label="Loading" className="space-y-6">
         <Breadcrumbs items={[{ label: "Investigations", href: "/investigations" }, { label: "Investigation" }]} />
         <Skeleton className="h-8 w-2/3" />
         <Skeleton className="h-36 rounded-xl" />

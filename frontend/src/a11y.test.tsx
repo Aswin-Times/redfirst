@@ -8,6 +8,7 @@ import { Breadcrumbs } from "@/components/breadcrumbs";
 import { CancelInvestigation } from "@/components/cancel-investigation";
 import { Dashboard } from "@/components/pages/dashboard";
 import { InvestigationHistory } from "@/components/pages/investigation-history";
+import { LoadingRows } from "@/components/feedback";
 import { InvestigationWorkspace } from "@/components/pages/investigation-workspace";
 import { NewInvestigation } from "@/components/pages/new-investigation";
 import { Projects } from "@/components/pages/projects";
@@ -111,9 +112,32 @@ describe("pages have no accessibility violations", () => {
     await clean(container);
   });
 
-  it("projects", async () => {
+  it("projects, once everything has loaded", async () => {
     const { container } = render(<Projects />);
     await screen.findByText("Demo");
+    await waitFor(() => expect(container.querySelector("[aria-busy]")).toBeNull());
+    await clean(container);
+  });
+});
+
+describe("loading states have no accessibility violations", () => {
+  it("skeleton rows", async () => {
+    const { container } = render(<LoadingRows rows={3} />);
+    await clean(container);
+  });
+
+  it("the dashboard while its data is still on the way", async () => {
+    mocked.projects.mockReturnValue(new Promise(() => {}));
+    mocked.investigations.mockReturnValue(new Promise(() => {}));
+    const { container } = render(<Dashboard />);
+    await waitFor(() => expect(container.querySelector("[aria-busy]")).not.toBeNull());
+    await clean(container);
+  });
+
+  it("the investigation page while its report is still on the way", async () => {
+    mocked.investigation.mockReturnValue(new Promise(() => {}));
+    const { container } = render(<AnnouncerProvider><InvestigationWorkspace /></AnnouncerProvider>);
+    await waitFor(() => expect(container.querySelector("[aria-busy]")).not.toBeNull());
     await clean(container);
   });
 });
