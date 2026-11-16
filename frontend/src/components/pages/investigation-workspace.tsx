@@ -2,13 +2,16 @@
 
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { CircleAlert, Clock, Download, FileCode2, Info, Square } from "lucide-react";
+import { Clock, Square } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 
 import { CodeView, LogView } from "@/components/code-view";
+import { CopyButton } from "@/components/copy-button";
+import { EvidenceSummary } from "@/components/evidence-summary";
+import { ExportMenu } from "@/components/export-menu";
 import { ErrorAlert, LoadingRows, PageHeader } from "@/components/feedback";
-import { StageProgress } from "@/components/stage-progress";
-import { StatusBadge } from "@/components/status-badge";
+import { Pipeline } from "@/components/stage-progress";
+import { VerdictBanner } from "@/components/verdict-banner";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button, buttonVariants } from "@/components/ui/button";
@@ -24,8 +27,8 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useInvestigationEvents } from "@/hooks/use-investigation-events";
 import { useResource } from "@/hooks/use-resource";
-import { api, exportUrls } from "@/lib/api";
-import { OUTCOME_INFO, STATE_LABEL, formatDate, formatDuration, humanize } from "@/lib/outcome";
+import { api } from "@/lib/api";
+import { STATE_LABEL, formatDate, formatDuration, humanize } from "@/lib/outcome";
 import { isTerminal } from "@/lib/stages";
 import type { AttemptSummary, EvidenceReport } from "@/lib/types";
 
@@ -57,7 +60,10 @@ export function InvestigationWorkspace() {
         title={data.bug_report.title}
         description={
           <span className="flex flex-wrap items-center gap-x-3 gap-y-1">
-            <span className="font-mono text-xs">{data.investigation_id}</span>
+            <span className="flex items-center gap-0.5">
+              <span className="font-mono text-xs">{data.investigation_id}</span>
+              <CopyButton value={data.investigation_id} label="Copy investigation ID" />
+            </span>
             <span>Created {formatDate(data.created_at)}</span>
             {live && (
               <span className="text-xs">
@@ -69,9 +75,11 @@ export function InvestigationWorkspace() {
         actions={<Actions data={data} onChanged={() => report.refresh()} />}
       />
       <div className="space-y-6">
-        <StageProgress timeline={data.timeline} state={data.state} />
+        <VerdictBanner report={data} />
         <WaitingForWorker data={data} />
-        <OutcomePanel data={data} />
+        {live && <Pipeline timeline={data.timeline} state={data.state} />}
+        <Guidance data={data} />
+        {!live && <Pipeline timeline={data.timeline} state={data.state} />}
         <Tabs defaultValue="evidence">
           <TabsList className="h-auto max-w-full flex-wrap justify-start">
             <TabsTrigger value="evidence">Evidence</TabsTrigger>
@@ -104,7 +112,6 @@ export function InvestigationWorkspace() {
 function Actions({ data, onChanged }: { data: EvidenceReport; onChanged: () => void }) {
   const [cancelling, setCancelling] = useState(false);
   const [error, setError] = useState<string>();
-  const urls = exportUrls(data.investigation_id);
 
   async function cancel() {
     setCancelling(true);
@@ -122,24 +129,13 @@ function Actions({ data, onChanged }: { data: EvidenceReport; onChanged: () => v
   return (
     <div className="flex flex-col items-end gap-1">
       <div className="flex flex-wrap items-center gap-2">
-        <StatusBadge state={data.state} outcome={data.outcome} />
         {!isTerminal(data.state) && (
           <Button variant="outline" size="sm" onClick={cancel} disabled={cancelling}>
             <Square data-icon="inline-start" aria-hidden />
             {cancelling ? "Cancelling…" : "Cancel"}
           </Button>
         )}
-        {data.final_test && (
-          <a href={urls.test} className={buttonVariants({ variant: "outline", size: "sm" })}>
-            <FileCode2 data-icon="inline-start" aria-hidden /> Test
-          </a>
-        )}
-        <a href={urls.markdown} className={buttonVariants({ variant: "outline", size: "sm" })}>
-          <Download data-icon="inline-start" aria-hidden /> Report (.md)
-        </a>
-        <a href={urls.json} className={buttonVariants({ variant: "ghost", size: "sm" })}>
-          JSON
-        </a>
+        <ExportMenu id={data.investigation_id} hasTest={Boolean(data.final_test)} />
       </div>
       {error && (
         <p role="alert" className="text-sm text-destructive">
@@ -174,42 +170,20 @@ function WaitingForWorker({ data }: { data: EvidenceReport }) {
   );
 }
 
-function OutcomePanel({ data }: { data: EvidenceReport }) {
-  if (data.outcome && data.outcome !== "EXECUTION_ERROR") {
-    return (
-      <Alert>
-        <Info aria-hidden />
-        <AlertTitle>
-          {OUTCOME_INFO[data.outcome].label}
-          {data.outcome_reason && ` · ${humanize(data.outcome_reason)}`}
-        </AlertTitle>
-        <AlertDescription>{OUTCOME_INFO[data.outcome].description}</AlertDescription>
-      </Alert>
-    );
-  }
-  if (data.state === "FAILED") {
-    return (
-      <Alert variant="destructive">
-        <CircleAlert aria-hidden />
-        <AlertTitle>{OUTCOME_INFO.EXECUTION_ERROR.label}</AlertTitle>
-        <AlertDescription>
-          {data.error?.type && <span className="font-mono">{data.error.type}: </span>}
-          {data.error?.detail ?? OUTCOME_INFO.EXECUTION_ERROR.description}
-          {data.error?.retryable && " This failure may be temporary; try again later."}
-        </AlertDescription>
-      </Alert>
-    );
-  }
-  if (data.state === "CANCELLED") {
-    return (
-      <Alert>
-        <Square aria-hidden />
-        <AlertTitle>Cancelled</AlertTitle>
-        <AlertDescription>This investigation was cancelled before it finished.</AlertDescription>
-      </Alert>
-    );
-  }
-  return null;
+/** What to keep in mind and what to do next, shown beside the verdict rather than in a tab. */
+function Guidance({ data }: { data: EvidenceReport }) {
+  if (!isTerminal(data.state)) return null;
+  if (!data.limitations.length && !data.next_steps.length) return null;
+  return (
+    <div className="grid gap-6 md:grid-cols-2 [&>*]:min-w-0">
+      <Section title="Next steps">
+        <BulletList items={data.next_steps} empty="None." />
+      </Section>
+      <Section title="Before you rely on this">
+        <BulletList items={data.limitations} empty="None recorded." />
+      </Section>
+    </div>
+  );
 }
 
 function Section({ title, children }: { title: string; children: ReactNode }) {
@@ -237,28 +211,9 @@ function BulletList({ items, empty, mono }: { items: string[]; empty: string; mo
 function EvidenceTab({ data }: { data: EvidenceReport }) {
   return (
     <div className="grid gap-6 lg:grid-cols-2 [&>*]:min-w-0">
-      <div className="space-y-6">
-        <Section title="Verification evidence">
-          <BulletList
-            items={data.evidence}
-            mono
-            empty={
-              isTerminal(data.state)
-                ? "No test was verified, so there is no execution evidence."
-                : "Evidence appears once a test has run and been verified."
-            }
-          />
-        </Section>
-        <Section title="Limitations">
-          <BulletList items={data.limitations} empty="None recorded." />
-        </Section>
-        <Section title="Next steps">
-          <BulletList
-            items={data.next_steps}
-            empty={isTerminal(data.state) ? "None." : "Available when the investigation finishes."}
-          />
-        </Section>
-      </div>
+      <Section title="Verification evidence">
+        <EvidenceSummary lines={data.evidence} terminal={isTerminal(data.state)} />
+      </Section>
       <Section title="Relevant code">
         {data.relevant_files.length === 0 ? (
           <p className="text-sm text-muted-foreground">

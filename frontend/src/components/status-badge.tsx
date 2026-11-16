@@ -14,7 +14,7 @@ import { OUTCOME_INFO, STATE_LABEL } from "@/lib/outcome";
 import type { InvestigationState, Outcome } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-const OUTCOME_STYLE: Record<Outcome, { icon: LucideIcon; className: string }> = {
+export const OUTCOME_STYLE: Record<Outcome, { icon: LucideIcon; className: string }> = {
   // Reproduced means the bug is confirmed, so it gets the alarm colour.
   REPRODUCED: { icon: Bug, className: "bg-destructive/10 text-destructive" },
   NOT_REPRODUCED: { icon: CircleCheck, className: "bg-success/10 text-success" },
