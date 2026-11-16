@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { elapsedMs, formatElapsed, reasonInfo, verdictFacts } from "@/lib/verdict";
+import { formatElapsed, reasonInfo, runTimes, verdictFacts } from "@/lib/verdict";
 import { makeAttempt as attempt, makeReport as report, makeRun as run } from "@/lib/test-fixtures";
 
 describe("verdictFacts", () => {
@@ -40,15 +40,40 @@ describe("verdictFacts", () => {
 });
 
 describe("elapsed time", () => {
-  it("uses the completion time when there is one, otherwise the clock", () => {
-    expect(elapsedMs(report())).toBe(12_000);
-    const running = report({ completed_at: null, state: "EXECUTING_TEST" });
-    expect(elapsedMs(running, Date.parse("2026-01-01T00:00:05Z"))).toBe(5_000);
+  const at = (state: string, time: string) => ({ state, at: `2026-01-01T${time}`, message: "" }) as never;
+
+  it("separates waiting in the queue from the time the work took", () => {
+    const t = runTimes(report({
+      completed_at: "2026-01-01T00:10:12",
+      timeline: [at("CREATED", "00:00:00"), at("ANALYZING_REPORT", "00:10:00"), at("COMPLETED", "00:10:12")],
+    }));
+    expect(t).toEqual({ started: true, queuedMs: 600_000, runMs: 12_000 });
+  });
+
+  it("times a running investigation from when it started, not from when it was created", () => {
+    const t = runTimes(report({
+      state: "EXECUTING_TEST", completed_at: null,
+      timeline: [at("CREATED", "00:00:00"), at("ANALYZING_REPORT", "00:10:00")],
+    }), Date.parse("2026-01-01T00:10:05Z"));
+    expect(t).toEqual({ started: true, queuedMs: 600_000, runMs: 5_000 });
+  });
+
+  it("counts a queued investigation as waiting, with no run time", () => {
+    const t = runTimes(report({
+      state: "CREATED", completed_at: null, timeline: [at("CREATED", "00:00:00")],
+    }), Date.parse("2026-01-01T00:03:00Z"));
+    expect(t).toEqual({ started: false, queuedMs: 180_000, runMs: 0 });
+  });
+
+  it("falls back to the creation time when there is no timeline", () => {
+    expect(runTimes(report())).toEqual({ started: true, queuedMs: 0, runMs: 12_000 });
   });
 
   it("never goes negative when clocks disagree", () => {
-    const running = report({ completed_at: null, state: "EXECUTING_TEST" });
-    expect(elapsedMs(running, Date.parse("2025-12-31T23:59:00Z"))).toBe(0);
+    const t = runTimes(report({ state: "EXECUTING_TEST", completed_at: null, timeline: [] }),
+      Date.parse("2025-12-31T23:59:00Z"));
+    expect(t.runMs).toBe(0);
+    expect(t.queuedMs).toBe(0);
   });
 
   it.each([

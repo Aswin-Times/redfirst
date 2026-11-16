@@ -53,10 +53,25 @@ export function verdictFacts(report: EvidenceReport) {
   };
 }
 
-export function elapsedMs(report: Pick<EvidenceReport, "created_at" | "completed_at">, now = Date.now()) {
+/**
+ * How long an investigation waited for a worker and how long the work took. The run starts at
+ * its first state after CREATED; counting from creation would include hours spent in the queue.
+ * Without a timeline (or once it is past CREATED with no entries) it falls back to creation.
+ */
+export function runTimes(
+  report: Pick<EvidenceReport, "created_at" | "completed_at" | "timeline" | "state">,
+  now = Date.now(),
+): { started: boolean; queuedMs: number; runMs: number } {
+  const created = parseTimestamp(report.created_at);
   const end = report.completed_at ? parseTimestamp(report.completed_at) : now;
-  return Math.max(0, end - parseTimestamp(report.created_at));
+  const first = report.timeline.find((t) => t.state !== "CREATED");
+  const started = first ? parseTimestamp(first.at) : report.state === "CREATED" ? null : created;
+  if (started === null) return { started: false, queuedMs: Math.max(0, end - created), runMs: 0 };
+  return { started: true, queuedMs: Math.max(0, started - created), runMs: Math.max(0, end - started) };
 }
+
+/** Waits shorter than this are normal and not worth a fact of their own. */
+export const NOTABLE_QUEUE_MS = 60_000;
 
 export function formatElapsed(ms: number): string {
   const s = Math.floor(ms / 1000);

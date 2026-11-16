@@ -71,6 +71,39 @@ describe("VerdictBanner: finished investigations", () => {
   });
 });
 
+describe("VerdictBanner: queue time is not run time", () => {
+  const at = (state: string, time: string) => ({ state, at: `2026-01-01T${time}`, message: "" }) as never;
+  const facts = () => screen.getByRole("list", { name: "Key facts" }).textContent ?? "";
+
+  it("says a queued investigation has been queued, not that it is running", () => {
+    render(<VerdictBanner report={makeReport({
+      state: "CREATED", outcome: null, outcome_reason: null, completed_at: null, attempts: [],
+      created_at: new Date(Date.now() - 90_000).toISOString().replace("Z", ""),
+      timeline: [{ state: "CREATED", at: new Date(Date.now() - 90_000).toISOString().replace("Z", ""), message: "" }] as never,
+    })} />);
+    expect(facts()).toMatch(/Queued for 1m/);
+    expect(facts()).not.toMatch(/Running for/);
+  });
+
+  it("shows how long the work took and, separately, how long it waited", () => {
+    render(<VerdictBanner report={makeReport({
+      completed_at: "2026-01-01T00:10:12",
+      timeline: [at("CREATED", "00:00:00"), at("ANALYZING_REPORT", "00:10:00"), at("COMPLETED", "00:10:12")],
+    })} />);
+    expect(facts()).toContain("Took 12s");
+    expect(facts()).toContain("Waited 10m 0s in the queue");
+  });
+
+  it("does not mention the queue when the wait was short", () => {
+    render(<VerdictBanner report={makeReport({
+      completed_at: "2026-01-01T00:00:20",
+      timeline: [at("CREATED", "00:00:00"), at("ANALYZING_REPORT", "00:00:05"), at("COMPLETED", "00:00:20")],
+    })} />);
+    expect(facts()).toContain("Took 15s");
+    expect(facts()).not.toMatch(/Waited/);
+  });
+});
+
 describe("VerdictBanner: other states", () => {
   it("shows progress, not a verdict, while running", () => {
     render(<VerdictBanner report={makeReport({

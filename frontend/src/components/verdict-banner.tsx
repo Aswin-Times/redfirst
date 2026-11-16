@@ -1,6 +1,6 @@
 "use client";
 
-import { Ban, Crosshair, Layers, Loader, Repeat2, ServerCrash, Timer, type LucideIcon } from "lucide-react";
+import { Ban, Crosshair, Hourglass, Layers, Loader, Repeat2, ServerCrash, Timer, type LucideIcon } from "lucide-react";
 import type { ReactNode } from "react";
 
 import { OUTCOME_STYLE } from "@/components/status-badge";
@@ -8,7 +8,7 @@ import { useNow } from "@/hooks/use-now";
 import { OUTCOME_INFO, STATE_LABEL, humanize } from "@/lib/outcome";
 import { isTerminal } from "@/lib/stages";
 import type { EvidenceReport, Outcome } from "@/lib/types";
-import { elapsedMs, formatElapsed, reasonInfo, verdictFacts } from "@/lib/verdict";
+import { NOTABLE_QUEUE_MS, formatElapsed, reasonInfo, runTimes, verdictFacts } from "@/lib/verdict";
 import { cn } from "@/lib/utils";
 
 /** Box and icon colours per outcome; the meaning matches the status badge. */
@@ -104,6 +104,7 @@ export function VerdictBanner({ report }: { report: EvidenceReport }) {
   const view = describe(report);
   const now = useNow(!isTerminal(report.state));
   const facts = verdictFacts(report);
+  const times = runTimes(report, now);
   const Icon = view.icon;
   const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? "" : "s"}`;
 
@@ -144,9 +145,12 @@ export function VerdictBanner({ report }: { report: EvidenceReport }) {
         {facts.attempts > 0 && <Fact icon={Layers}>{plural(facts.attempts, "attempt")}</Fact>}
         {facts.evidenceKind && <Fact icon={Crosshair}>{facts.evidenceKind}</Fact>}
         <Fact icon={Timer}>
-          {view.live ? "Running for " : "Took "}
-          {formatElapsed(elapsedMs(report, now))}
+          {!times.started ? "Queued for " : view.live ? "Running for " : "Took "}
+          {formatElapsed(times.started ? times.runMs : times.queuedMs)}
         </Fact>
+        {times.started && times.queuedMs >= NOTABLE_QUEUE_MS && (
+          <Fact icon={Hourglass}>Waited {formatElapsed(times.queuedMs)} in the queue</Fact>
+        )}
       </ul>
     </section>
   );
