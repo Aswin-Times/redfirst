@@ -2,12 +2,13 @@
 
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { Clock, Square } from "lucide-react";
+import { Clock } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 
 import { CodeView, LogView } from "@/components/code-view";
 import { useAnnounce } from "@/components/announcer";
 import { Breadcrumbs } from "@/components/breadcrumbs";
+import { CancelInvestigation } from "@/components/cancel-investigation";
 import { CopyButton } from "@/components/copy-button";
 import { EvidenceSummary } from "@/components/evidence-summary";
 import { ExportMenu } from "@/components/export-menu";
@@ -17,7 +18,7 @@ import { VerdictBanner } from "@/components/verdict-banner";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Button, buttonVariants } from "@/components/ui/button";
+import { buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Table,
@@ -150,12 +151,7 @@ function Actions({ data, onChanged }: { data: EvidenceReport; onChanged: () => v
   return (
     <div className="flex flex-col items-end gap-1">
       <div className="flex flex-wrap items-center gap-2">
-        {!isTerminal(data.state) && (
-          <Button variant="outline" size="sm" onClick={cancel} disabled={cancelling}>
-            <Square data-icon="inline-start" aria-hidden />
-            {cancelling ? "Cancelling…" : "Cancel"}
-          </Button>
-        )}
+        {!isTerminal(data.state) && <CancelInvestigation onConfirm={cancel} busy={cancelling} />}
         <ExportMenu id={data.investigation_id} hasTest={Boolean(data.final_test)} />
       </div>
       {error && (
