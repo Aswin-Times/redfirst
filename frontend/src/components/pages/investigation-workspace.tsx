@@ -6,6 +6,7 @@ import { Clock, Square } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 
 import { CodeView, LogView } from "@/components/code-view";
+import { useAnnounce } from "@/components/announcer";
 import { Breadcrumbs } from "@/components/breadcrumbs";
 import { CopyButton } from "@/components/copy-button";
 import { EvidenceSummary } from "@/components/evidence-summary";
@@ -128,6 +129,7 @@ export function InvestigationWorkspace() {
 }
 
 function Actions({ data, onChanged }: { data: EvidenceReport; onChanged: () => void }) {
+  const announce = useAnnounce();
   const [cancelling, setCancelling] = useState(false);
   const [error, setError] = useState<string>();
 
@@ -136,6 +138,7 @@ function Actions({ data, onChanged }: { data: EvidenceReport; onChanged: () => v
     setError(undefined);
     try {
       await api.cancel(data.investigation_id);
+      announce("Investigation cancelled");
       onChanged();
     } catch (e) {
       setError((e as Error).message);

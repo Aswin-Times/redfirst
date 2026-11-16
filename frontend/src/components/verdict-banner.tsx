@@ -84,6 +84,13 @@ function describe(report: EvidenceReport): View {
   };
 }
 
+function announcement(view: View): string {
+  const sentence = typeof view.sentence === "string" ? view.sentence : "";
+  return view.live
+    ? `${view.title}: ${sentence}`
+    : `${view.title}${view.reason ? `, ${view.reason.toLowerCase()}` : ""}. ${sentence}`;
+}
+
 function Fact({ icon: Icon, children }: { icon: LucideIcon; children: ReactNode }) {
   return (
     <li className="flex items-center gap-1.5">
@@ -101,11 +108,13 @@ export function VerdictBanner({ report }: { report: EvidenceReport }) {
   const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? "" : "s"}`;
 
   return (
-    <section
-      aria-labelledby="verdict-title"
-      role={view.live ? "status" : undefined}
-      className={cn("rounded-xl border p-4 sm:p-5", view.tone)}
-    >
+    <section aria-labelledby="verdict-title" className={cn("rounded-xl border p-4 sm:p-5", view.tone)}>
+      {/* The only live region here. Its text changes when the stage or the result changes, never
+          with the timer, so screen readers hear progress and the final result but not a tick
+          every second. */}
+      <div role="status" aria-live="polite" className="sr-only">
+        {announcement(view)}
+      </div>
       <div className="flex items-start gap-3 sm:gap-4">
         <span className={cn("grid size-10 shrink-0 place-items-center rounded-full sm:size-12", view.chip)}>
           <Icon className={cn("size-5 sm:size-6", view.spin && "animate-spin")} aria-hidden />

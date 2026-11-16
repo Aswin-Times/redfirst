@@ -6,6 +6,7 @@ import {
   useEffect, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode,
 } from "react";
 
+import { useAnnounce } from "@/components/announcer";
 import { ArchiveDropzone } from "@/components/archive-dropzone";
 import { Breadcrumbs } from "@/components/breadcrumbs";
 import { ErrorAlert, LoadingRows, PageHeader } from "@/components/feedback";
@@ -53,6 +54,7 @@ function writeDraft(values: FormValues): void {
 
 export function NewInvestigation() {
   const router = useRouter();
+  const announce = useAnnounce();
   const projects = useResource(() => api.projects(), []);
   // Empty selections fall back to defaults derived from the data (first project, newest repo).
   const [selectedProject, setProjectId] = useState("");
@@ -135,6 +137,7 @@ export function NewInvestigation() {
     await projects.refresh();
     setProjectId(project.id);
     setShowCreate(false);
+    announce(`Project ${project.name} created`);
   }
 
   /** Create (or reuse) the sample project, give it the sample repository, fill in the report. */
@@ -154,6 +157,7 @@ export function NewInvestigation() {
       setValues(SAMPLE.values);
       setDetailOpen(true);
       setRestored(false);
+      announce("Sample bug and repository loaded. Review the report, then start the investigation.");
     } catch (e) {
       setSampleError(e as Error);
     } finally {

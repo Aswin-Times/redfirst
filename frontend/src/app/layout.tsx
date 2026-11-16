@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 
+import { AnnouncerProvider } from "@/components/announcer";
 import { AppHeader } from "@/components/app-header";
 import { SkipLink } from "@/components/skip-link";
 import { THEME_SCRIPT } from "@/lib/theme";
@@ -26,11 +27,13 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
         <script dangerouslySetInnerHTML={{ __html: THEME_SCRIPT }} />
       </head>
       <body className="flex min-h-full flex-col">
-        <SkipLink />
-        <AppHeader />
-        <main id="main" tabIndex={-1} className="mx-auto w-full max-w-6xl flex-1 px-4 py-6 outline-none sm:px-6">
-          {children}
-        </main>
+        <AnnouncerProvider>
+          <SkipLink />
+          <AppHeader />
+          <main id="main" tabIndex={-1} className="mx-auto w-full max-w-6xl flex-1 px-4 py-6 outline-none sm:px-6">
+            {children}
+          </main>
+        </AnnouncerProvider>
       </body>
     </html>
   );

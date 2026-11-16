@@ -3,6 +3,7 @@
 import { FileArchive, Loader, Upload } from "lucide-react";
 import { useRef, useState, type DragEvent } from "react";
 
+import { useAnnounce } from "@/components/announcer";
 import { Button } from "@/components/ui/button";
 import { api } from "@/lib/api";
 import { checkArchive } from "@/lib/archive";
@@ -26,6 +27,7 @@ export function ArchiveDropzone({
   onUploaded: (repo: Repository) => void;
   disabled?: boolean;
 }) {
+  const announce = useAnnounce();
   const input = useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = useState(false);
   const [uploading, setUploading] = useState<string>();
@@ -51,6 +53,7 @@ export function ArchiveDropzone({
     try {
       const repo = await api.uploadRepository(projectId, file);
       setAdded({ name: file.name, repo });
+      announce(`Added ${file.name}: ${summary(repo)}`);
       onUploaded(repo);
     } catch (e) {
       setError((e as Error).message);

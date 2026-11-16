@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { AnnouncerProvider } from "@/components/announcer";
 import { ArchiveDropzone } from "@/components/archive-dropzone";
 import { api } from "@/lib/api";
 import { UPLOAD_MAX_BYTES } from "@/lib/report-form";
@@ -39,6 +40,14 @@ describe("ArchiveDropzone", () => {
     await waitFor(() => expect(onUploaded).toHaveBeenCalledWith(repo));
     expect(upload).toHaveBeenCalledWith("p1", f);
     expect(screen.getByText(/^Added/).textContent).toBe("Added code.zip · 2 Python files · flat layout");
+  });
+
+  it("announces a successful upload to screen readers", async () => {
+    upload.mockResolvedValue(repo);
+    render(<AnnouncerProvider><ArchiveDropzone projectId="p1" onUploaded={vi.fn()} /></AnnouncerProvider>);
+    choose(file("code.zip"));
+    await waitFor(() =>
+      expect(screen.getByRole("status").textContent).toContain("Added code.zip: 2 Python files · flat layout"));
   });
 
   it("accepts a file dropped on the zone", async () => {

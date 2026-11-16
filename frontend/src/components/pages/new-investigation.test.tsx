@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { AnnouncerProvider } from "@/components/announcer";
 import { NewInvestigation } from "@/components/pages/new-investigation";
 import { api } from "@/lib/api";
 import { DRAFT_KEY, LIMITS } from "@/lib/report-form";
@@ -256,6 +257,14 @@ describe("the sample", () => {
     await waitFor(() => expect(field(/^Title/).value).toBe(SAMPLE.values.title));
     expect(mocked.createProject).not.toHaveBeenCalled();
     expect(mocked.uploadRepository).not.toHaveBeenCalled();
+  });
+
+  it("announces that the sample is ready", async () => {
+    mocked.projects.mockResolvedValue([project("ps", SAMPLE.projectName)]);
+    mocked.repositories.mockResolvedValue([repo("rs", "ps")]);
+    render(<AnnouncerProvider><NewInvestigation /></AnnouncerProvider>);
+    fireEvent.click(await screen.findByRole("button", { name: /try a sample bug/i }));
+    await waitFor(() => expect(screen.getByRole("status").textContent).toMatch(/Sample bug and repository loaded/));
   });
 
   it("says so when the sample cannot be set up", async () => {

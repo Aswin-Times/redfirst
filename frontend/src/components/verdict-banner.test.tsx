@@ -1,5 +1,5 @@
-import { cleanup, render, screen, within } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { act, cleanup, render, screen, within } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { VerdictBanner } from "@/components/verdict-banner";
 import { makeAttempt, makeReport, makeRun } from "@/lib/test-fixtures";
@@ -13,7 +13,8 @@ describe("VerdictBanner: finished investigations", () => {
     render(<VerdictBanner report={makeReport()} />);
     expect(screen.getByRole("heading", { name: "Reproduced" })).toBeTruthy();
     expect(screen.getByText("Matching failure")).toBeTruthy();
-    expect(screen.getByText(/failed the way the report predicts/i)).toBeTruthy();
+    // Shown once, and once more in the screen-reader-only announcement.
+    expect(screen.getAllByText(/failed the way the report predicts/i)).toHaveLength(2);
   });
 
   it("warns that a reproduction still needs a human reading the test", () => {
@@ -35,7 +36,7 @@ describe("VerdictBanner: finished investigations", () => {
       outcome: "INCONCLUSIVE", outcome_reason: "control_failed", evidence: [],
     })} />);
     expect(screen.getByRole("heading", { name: "Inconclusive" })).toBeTruthy();
-    expect(screen.getByText(/known-good control check failed/i)).toBeTruthy();
+    expect(screen.getAllByText(/known-good control check failed/i)).toHaveLength(2);
   });
 
   it("shows how many runs agreed, the attempts, the evidence kind and the time taken", () => {
@@ -77,8 +78,8 @@ describe("VerdictBanner: other states", () => {
       created_at: new Date(Date.now() - 5_000).toISOString(),
     })} />);
     expect(screen.getByRole("heading", { name: "Investigating" })).toBeTruthy();
-    expect(screen.getByText(/executing/i)).toBeTruthy();
-    expect(screen.getByRole("status")).toBeTruthy();
+    expect(screen.getAllByText(/executing/i).length).toBeGreaterThan(0);
+    expect(screen.getByRole("status").textContent).toMatch(/Investigating.*Executing/);
     expect(screen.queryByText("Reproduced")).toBeNull();
   });
 
@@ -86,7 +87,7 @@ describe("VerdictBanner: other states", () => {
     render(<VerdictBanner report={makeReport({
       state: "CREATED", outcome: null, outcome_reason: null, completed_at: null, attempts: [],
     })} />);
-    expect(screen.getByText(/waiting for a worker/i)).toBeTruthy();
+    expect(screen.getAllByText(/waiting for a worker/i).length).toBeGreaterThan(0);
   });
 
   it("shows an infrastructure failure as an execution error with its detail", () => {
@@ -114,5 +115,42 @@ describe("VerdictBanner: other states", () => {
       state: "CANCELLED", outcome: null, outcome_reason: null,
     })} />);
     expect(screen.getByRole("heading", { name: "Cancelled" })).toBeTruthy();
+  });
+});
+
+describe("VerdictBanner: screen reader announcements", () => {
+  const running = (ageMs: number) => makeReport({
+    state: "EXECUTING_TEST", outcome: null, outcome_reason: null, completed_at: null,
+    created_at: new Date(Date.now() - ageMs).toISOString().replace("Z", ""),
+  });
+
+  it("does not re-announce every second while the timer ticks", () => {
+    vi.useFakeTimers();
+    try {
+      const { container } = render(<VerdictBanner report={running(5_000)} />);
+      const status = screen.getByRole("status");
+      const spoken = status.textContent;
+      const shown = container.querySelector('[aria-label="Key facts"]')?.textContent;
+      act(() => vi.advanceTimersByTime(4_000));
+      expect(status.textContent).toBe(spoken);
+      expect(status.textContent).not.toMatch(/\d+s/);
+      expect(container.querySelector('[aria-label="Key facts"]')?.textContent).not.toBe(shown);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("announces the result when the investigation finishes", () => {
+    const { rerender } = render(<VerdictBanner report={running(5_000)} />);
+    expect(screen.getByRole("status").textContent).not.toMatch(/Reproduced/);
+    rerender(<VerdictBanner report={makeReport()} />);
+    expect(screen.getByRole("status").textContent).toMatch(/Reproduced.*failed the way the report predicts/);
+  });
+
+  it("has exactly one live region, and it is not the banner itself", () => {
+    render(<VerdictBanner report={makeReport()} />);
+    const regions = screen.getAllByRole("status");
+    expect(regions).toHaveLength(1);
+    expect(regions[0].className).toContain("sr-only");
   });
 });
