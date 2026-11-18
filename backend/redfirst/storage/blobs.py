@@ -44,9 +44,18 @@ class BlobStore:
         target = self._path(key)
         if not target.exists():
             target.parent.mkdir(parents=True, exist_ok=True)
-            tmp = target.with_suffix(".tmp")
-            shutil.copyfile(source, tmp)
-            os.replace(tmp, target)
+            fd, tmp = tempfile.mkstemp(dir=target.parent)
+            os.close(fd)
+            try:
+                shutil.copyfile(source, tmp)
+                try:
+                    os.replace(tmp, target)
+                except (FileExistsError, PermissionError):
+                    # Windows can deny a replace racing another writer of the same digest.
+                    if not target.is_file():
+                        raise
+            finally:
+                Path(tmp).unlink(missing_ok=True)
         return key
 
     def path(self, key: str) -> Path:

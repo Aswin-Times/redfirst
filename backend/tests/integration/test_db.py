@@ -138,21 +138,47 @@ def test_delete_removes_evidence_that_references_execution_results(engine):
         inv = seed(s)
         attempt = service.start_attempt(s, inv, 3)
         run = ExecutionResult(attempt_id=attempt.id, run_index=0, exit_code=1,
-                              stdout_ref="a" * 64)
+                              stdout_ref="a" * 64, stderr_ref="b" * 64, junit_ref="c" * 64)
         s.add(run)
         s.flush()
         s.add(EvidenceRecord(investigation_id=inv.id, kind="verdict", payload={"x": 1},
-                             execution_result_id=run.id))
+                             execution_result_id=run.id, artifact_ref="d" * 64))
         service.transition(s, inv, S.CANCELLED)
         inv_id = inv.id
     with session_scope(engine) as s:  # foreign keys are enforced (PRAGMA foreign_keys=ON)
         refs = delete_investigation(s, s.get(Investigation, inv_id))
-    assert refs == {"a" * 64}
+    assert refs == {"a" * 64, "b" * 64, "c" * 64, "d" * 64}
     with session_scope(engine) as s:
         assert s.scalars(select(EvidenceRecord)).all() == []
         assert s.scalars(select(ExecutionResult)).all() == []
         assert s.scalars(select(Attempt)).all() == []
         assert s.get(Investigation, inv_id) is None
+
+
+def test_blob_sweep_preserves_shared_junit_and_evidence_artifacts(engine, tmp_path):
+    from redfirst.db.models import ExecutionResult
+    from redfirst.db.retention import sweep_blobs
+    from redfirst.storage.blobs import BlobStore
+
+    blobs = BlobStore(tmp_path / "blobs")
+    junit = blobs.put_bytes(b"junit")
+    artifact = blobs.put_bytes(b"evidence artifact")
+    orphan = blobs.put_bytes(b"orphan")
+    with session_scope(engine) as s:
+        inv = seed(s)
+        attempt = service.start_attempt(s, inv, 3)
+        run = ExecutionResult(attempt_id=attempt.id, run_index=0, junit_ref=junit)
+        s.add(run)
+        s.flush()
+        s.add(EvidenceRecord(investigation_id=inv.id, kind="report", payload={},
+                             execution_result_id=run.id, artifact_ref=artifact))
+
+    with session_scope(engine) as s:
+        assert sweep_blobs(s, blobs, {junit, artifact, orphan}) == 1
+    assert blobs.path(junit).read_bytes() == b"junit"
+    assert blobs.path(artifact).read_bytes() == b"evidence artifact"
+    with pytest.raises(FileNotFoundError):
+        blobs.path(orphan)
 
 
 # --- M9.1 R5: migrations must also work on a database that already holds data ------------------

@@ -39,13 +39,17 @@ def delete_investigation(s: Session, inv: Investigation) -> set[str]:
     run_ids = list(s.scalars(select(ExecutionResult.id).where(
         ExecutionResult.attempt_id.in_(attempt_ids)))) if attempt_ids else []
     refs: set[str] = set()
-    for row in s.execute(select(ExecutionResult.stdout_ref, ExecutionResult.stderr_ref)
+    for row in s.execute(select(ExecutionResult.stdout_ref, ExecutionResult.stderr_ref,
+                                ExecutionResult.junit_ref)
                          .where(ExecutionResult.id.in_(run_ids))):
         refs.update(r for r in row if r)
     # Children before parents: evidence may reference execution results (foreign key), so it
     # goes first -- including any evidence that points at these runs from elsewhere.
-    s.execute(delete(EvidenceRecord).where(or_(EvidenceRecord.investigation_id == inv.id,
-                                               EvidenceRecord.execution_result_id.in_(run_ids))))
+    evidence = or_(EvidenceRecord.investigation_id == inv.id,
+                   EvidenceRecord.execution_result_id.in_(run_ids))
+    refs.update(s.scalars(select(EvidenceRecord.artifact_ref).where(
+        evidence, EvidenceRecord.artifact_ref.is_not(None))))
+    s.execute(delete(EvidenceRecord).where(evidence))
     if attempt_ids:
         s.execute(delete(ExecutionResult).where(ExecutionResult.id.in_(run_ids)))
         s.execute(delete(GeneratedTest).where(GeneratedTest.attempt_id.in_(attempt_ids)))
@@ -66,8 +70,11 @@ def sweep_blobs(s: Session, blobs: BlobStore, candidates: set[str]) -> int:
     for key in candidates:
         in_use = s.scalar(
             select(ExecutionResult.id).where(
-                or_(ExecutionResult.stdout_ref == key, ExecutionResult.stderr_ref == key)
+                or_(ExecutionResult.stdout_ref == key, ExecutionResult.stderr_ref == key,
+                    ExecutionResult.junit_ref == key)
             ).limit(1)
+        ) or s.scalar(select(EvidenceRecord.id).where(
+            EvidenceRecord.artifact_ref == key).limit(1)
         ) or s.scalar(select(Repository.id).where(Repository.storage_ref == key).limit(1))
         if not in_use and blobs.delete(key):
             removed += 1
