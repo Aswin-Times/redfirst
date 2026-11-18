@@ -1,6 +1,8 @@
 """Abuse controls end to end: LLM budgets, queue cap, input caps, redaction, retention."""
 
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -241,6 +243,38 @@ def test_purge_deletes_only_old_finished_investigations(make_env, tmp_path):  # 
     with session_scope(env.deps.engine) as s:
         remaining = {i.id for i in s.scalars(select(Investigation))}
     assert remaining == {recent_running, old_running}  # unfinished work is never purged
+
+
+def test_identical_concurrent_file_uploads_use_independent_temp_files(tmp_path, monkeypatch):
+    import redfirst.storage.blobs as blob_module
+
+    store = blob_module.BlobStore(tmp_path / "blobs")
+    source = tmp_path / "archive.zip"
+    source.write_bytes(b"same uploaded archive")
+    copies_finished = threading.Barrier(2, timeout=5)
+    renames_started = threading.Barrier(2, timeout=5)
+    real_copyfile = blob_module.shutil.copyfile
+    real_replace = blob_module.os.replace
+    rename_sources = []
+
+    def synchronized_copyfile(src, dst):
+        copies_finished.wait()
+        real_copyfile(src, dst)
+        copies_finished.wait()
+
+    def synchronized_replace(src, dst):
+        rename_sources.append(src)
+        renames_started.wait()
+        real_replace(src, dst)
+
+    monkeypatch.setattr(blob_module.shutil, "copyfile", synchronized_copyfile)
+    monkeypatch.setattr(blob_module.os, "replace", synchronized_replace)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        keys = list(pool.map(store.put_file, [source, source]))
+
+    assert keys[0] == keys[1]
+    assert len(set(rename_sources)) == 2
+    assert store.path(keys[0]).read_bytes() == source.read_bytes()
 
 
 def test_blob_store_rejects_keys_that_could_escape_the_store(tmp_path):
