@@ -7,7 +7,9 @@ import { fieldProblems } from "@/lib/report-form";
 import { SAMPLE, loadSampleArchive } from "@/lib/sample";
 
 const root = resolve(process.cwd(), "..");
-const fixture = readFileSync(resolve(root, "fixtures/repos/exception_bug/accounts/registration.py"));
+// Git may check out the fixture with CRLF on Windows; the stored zip entries use LF.
+const fixture = readFileSync(resolve(root, "fixtures/repos/exception_bug/accounts/registration.py"), "utf-8")
+  .replaceAll("\r\n", "\n");
 const archive = readFileSync(resolve(process.cwd(), "public/samples/accounts-demo.zip"));
 
 describe("the sample archive", () => {
@@ -33,7 +35,7 @@ describe("the sample bug report", () => {
   });
 
   it("describes the bug that is really in the archive", () => {
-    const lines = fixture.toString("utf-8").split("\n");
+    const lines = fixture.split("\n");
     const buggy = lines.findIndex((l) => l.includes('username = data["username"]')) + 1;
     expect(buggy).toBeGreaterThan(0);
     expect(SAMPLE.values.stack_trace).toContain(`line ${buggy}, in register`);
