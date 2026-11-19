@@ -12,3 +12,8 @@ node_modules/
 
 # machine-specific dev server config
 .claude/launch.json
+# local SQLite databases
+*.db
+*.db-journal
+*.db-wal
+*.db-shm

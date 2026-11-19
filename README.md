@@ -33,6 +33,42 @@ sandbox and the live Claude API have not been exercised yet (see Known limitatio
 | M12 New-investigation flow | done: Code / The bug / More detail layout with a live "What REDFIRST will use" panel (real consequences, no score), examples, counters and limits mirrored from the backend (a test fails on drift), drag-and-drop upload with browser-side checks, project creation on the page, a "Try a sample bug" button, saved drafts, Ctrl/Cmd+Enter. Run end to end against a fresh empty API: sample, Start, queued investigation; the worker was not running, so no investigation was executed |
 | M13 Navigation and accessibility | done: phone navigation that was unusable (57 px slot) is now two rows, skip link, breadcrumbs, real page titles, a confirmation before Cancel (focus trapped, Escape closes), screen reader announcements that no longer tick every second, 24 px+ targets with whole-row links, searchable/sortable list whose filters live in the URL, and an axe-core test over every page state. Not tested with a real screen reader (none available here) |
 
+## Quick start (Windows)
+
+From the repository root in PowerShell:
+
+```powershell
+.\dev.ps1
+```
+
+It creates `backend\.env` from `.env.example` if there is none (SQLite, no secrets), installs
+missing dependencies, applies database migrations, and opens the API, the worker and the web UI
+in their own windows, then the browser at http://localhost:3000. Close a window to stop that
+service. Use `-NoWorker` while Docker is not set up. If PowerShell refuses to run scripts:
+`powershell -ExecutionPolicy Bypass -File .\dev.ps1`.
+
+Windows PowerShell 5.1 does not understand `&&` or `VAR=value command`; run commands on
+separate lines, and set variables with `$env:NAME = "value"`.
+
+## Running a real investigation
+
+A real investigation needs two things this repository cannot provide:
+
+1. **Docker**, for the sandbox. On Windows, Docker Desktop needs WSL 2:
+   `winget install --id Microsoft.WSL --exact`, then
+   `dism.exe /online /enable-feature /featurename:VirtualMachinePlatform /all /norestart`
+   (both in an administrator PowerShell), restart, then
+   `winget install --id Docker.DockerDesktop --exact`. Start Docker Desktop, then build the
+   sandbox image from the repository root:
+   `docker build -t redfirst-sandbox-python:3.12 sandbox-images/python`
+2. **An Anthropic API key**, from https://console.anthropic.com. Put it after
+   `REDFIRST_LLM_API_KEY=` in `backend/.env` (git-ignored). Never commit it or paste it into a chat.
+
+The worker checks both when it starts: without Docker or the sandbox image it says what is missing
+and exits without claiming anything, so investigations stay queued; a missing key is a warning.
+`backend/.env` caps model usage (`REDFIRST_LLM_TOKEN_BUDGET_PER_INVESTIGATION`,
+`REDFIRST_LLM_MAX_CALLS_PER_DAY`).
+
 ## Setup (Windows / macOS / Linux)
 
 Requirements: Python 3.11+, [uv](https://docs.astral.sh/uv/), Node.js 20.9+ and pnpm for the web
@@ -55,10 +91,13 @@ cd backend
 REDFIRST_REQUIRE_DOCKER=1 uv run python -m pytest -m docker -rA
 ```
 
+In PowerShell, set the variable first: `$env:REDFIRST_REQUIRE_DOCKER = "1"`, then run the pytest line.
+
 CI: `.github/workflows/sandbox.yml` runs the non-Docker suite and the Docker suite on GitHub's
 Linux runners (read-only token, no secrets, actions pinned by SHA).
 
-Copy `.env.example` to `backend/.env` and adjust. Never commit real secrets.
+Copy `.env.example` to `backend/.env` and adjust (it defaults to SQLite, so no database server is
+needed). Never commit real secrets.
 
 Apply database migrations (needs a database; see `REDFIRST_DATABASE_URL`). Existing databases
 must be upgraded before running M9 code: migration `0002` adds the worker lease columns.
