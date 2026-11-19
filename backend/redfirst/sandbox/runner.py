@@ -77,6 +77,16 @@ def docker_available() -> bool:
     return proc.returncode == 0
 
 
+def sandbox_image_available(image: str) -> bool:
+    """Whether the sandbox image has been built on this Docker host."""
+    try:
+        proc = subprocess.run(["docker", "image", "inspect", image], capture_output=True,
+                              timeout=15, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return proc.returncode == 0
+
+
 @dataclass(frozen=True)
 class Captured:
     """Result of running a process with bounded output capture."""
